@@ -141,14 +141,13 @@ accelerate launch train_dreambooth_lora_z_image.py \
   --gradient_accumulation_steps=4 \
   --optimizer="adamW" \
   --learning_rate=1e-4 \
-  --report_to="wandb" \
+  --report_to="tensorboard" \
   --lr_scheduler="constant" \
   --lr_warmup_steps=100 \
   --max_train_steps=500 \
   --validation_prompt="A photo of sks dog in a bucket" \
   --validation_epochs=25 \
-  --seed="0" \
-  --push_to_hub
+  --seed="0"
 ```
 
 To better track our training experiments, we're using the following flags in the command above:
@@ -183,14 +182,13 @@ accelerate launch train_dreambooth_lora_z_image.py \
   --gradient_accumulation_steps=4 \
   --optimizer="adamW" \
   --learning_rate=1e-4 \
-  --report_to="wandb" \
+  --report_to="tensorboard" \
   --lr_scheduler="constant" \
   --lr_warmup_steps=100 \
   --max_train_steps=500 \
   --validation_prompt="A photo of sks dog in a bucket" \
   --validation_epochs=25 \
-  --seed="0" \
-  --push_to_hub
+  --seed="0"
 ```
 
 ### FSDP on the transformer
@@ -246,14 +244,13 @@ accelerate launch train_dreambooth_lora_z_image.py \
   --gradient_accumulation_steps=4 \
   --optimizer="prodigy" \
   --learning_rate=1.0 \
-  --report_to="wandb" \
+  --report_to="tensorboard" \
   --lr_scheduler="constant_with_warmup" \
   --lr_warmup_steps=100 \
   --max_train_steps=500 \
   --validation_prompt="A photo of sks dog in a bucket" \
   --validation_epochs=25 \
-  --seed="0" \
-  --push_to_hub
+  --seed="0"
 ```
 
 ### LoRA Rank and Alpha

@@ -52,7 +52,6 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
-from huggingface_hub import create_repo, upload_folder
 from huggingface_hub.utils import insecure_hashlib
 from peft import LoraConfig, prepare_model_for_kbit_training, set_peft_model_state_dict
 from peft.utils import get_peft_model_state_dict
@@ -108,82 +107,6 @@ if is_wandb_available():
 check_min_version("0.40.0.dev0")
 
 logger = get_logger(__name__)
-
-
-def save_model_card(
-    repo_id: str,
-    images=None,
-    base_model: str = None,
-    instance_prompt=None,
-    validation_prompt=None,
-    repo_folder=None,
-    quant_training=None,
-):
-    widget_dict = []
-    if images is not None:
-        for i, image in enumerate(images):
-            image.save(os.path.join(repo_folder, f"image_{i}.png"))
-            widget_dict.append(
-                {"text": validation_prompt if validation_prompt else " ", "output": {"url": f"image_{i}.png"}}
-            )
-
-    model_description = f"""
-# Z Image DreamBooth LoRA - {repo_id}
-
-<Gallery />
-
-## Model description
-
-These are {repo_id} DreamBooth LoRA weights for {base_model}.
-
-The weights were trained using [DreamBooth](https://dreambooth.github.io/) with the [Z Image diffusers trainer](https://github.com/huggingface/diffusers/blob/main/examples/dreambooth/README_z_image.md).
-
-Quant training? {quant_training}
-
-## Trigger words
-
-You should use `{instance_prompt}` to trigger the image generation.
-
-## Download model
-
-[Download the *.safetensors LoRA]({repo_id}/tree/main) in the Files & versions tab.
-
-## Use it with the [🧨 diffusers library](https://github.com/huggingface/diffusers)
-
-```py
-from diffusers import AutoPipelineForText2Image
-import torch
-pipeline = AutoPipelineForText2Image.from_pretrained("Tongyi-MAI/Z-Image", torch_dtype=torch.bfloat16).to('cuda')
-pipeline.load_lora_weights('{repo_id}', weight_name='pytorch_lora_weights.safetensors')
-image = pipeline('{validation_prompt if validation_prompt else instance_prompt}').images[0]
-```
-
-For more details, including weighting, merging and fusing LoRAs, check the [documentation on loading LoRAs in diffusers](https://huggingface.co/docs/diffusers/main/en/using-diffusers/loading_adapters)
-
-## License
-
-Apace License 2.0
-"""
-    model_card = load_or_create_model_card(
-        repo_id_or_path=repo_id,
-        from_training=True,
-        license="apache-2.0",
-        base_model=base_model,
-        prompt=instance_prompt,
-        model_description=model_description,
-        widget=widget_dict,
-    )
-    tags = [
-        "text-to-image",
-        "diffusers-training",
-        "diffusers",
-        "lora",
-        "z-image",
-        "template:sd-lora",
-    ]
-
-    model_card = populate_model_card(model_card, tags=tags)
-    model_card.save(os.path.join(repo_folder, "README.md"))
 
 
 def log_validation(
@@ -652,14 +575,6 @@ def parse_args(input_args=None):
         "Ignored if optimizer is adamW",
     )
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
-    parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
-    parser.add_argument("--hub_token", type=str, default=None, help="The token to use to push to the Model Hub.")
-    parser.add_argument(
-        "--hub_model_id",
-        type=str,
-        default=None,
-        help="The name of the repository to keep in sync with the local `output_dir`.",
-    )
     parser.add_argument(
         "--logging_dir",
         type=str,
@@ -1057,12 +972,6 @@ class PromptDataset(Dataset):
 
 
 def main(args):
-    if args.report_to == "wandb" and args.hub_token is not None:
-        raise ValueError(
-            "You cannot use both --report_to=wandb and --hub_token due to a security risk of exposing your token."
-            " Please use `hf auth login` to authenticate with the Hub."
-        )
-
     if torch.backends.mps.is_available() and args.mixed_precision == "bf16":
         # due to pytorch#99272, MPS does not yet support bfloat16.
         raise ValueError(
@@ -1161,12 +1070,6 @@ def main(args):
     if accelerator.is_main_process:
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
-
-        if args.push_to_hub:
-            repo_id = create_repo(
-                repo_id=args.hub_model_id or Path(args.output_dir).name,
-                exist_ok=True,
-            ).repo_id
 
     # Load the tokenizers
     tokenizer = Qwen2Tokenizer.from_pretrained(
@@ -1935,30 +1838,6 @@ def main(args):
             images = None
             del pipeline
             free_memory()
-
-        validation_prompt = args.validation_prompt if args.validation_prompt else args.final_validation_prompt
-        quant_training = None
-        if args.do_fp8_training:
-            quant_training = "FP8 TorchAO"
-        elif args.bnb_quantization_config_path:
-            quant_training = "BitsandBytes"
-        save_model_card(
-            (args.hub_model_id or Path(args.output_dir).name) if not args.push_to_hub else repo_id,
-            images=images,
-            base_model=args.pretrained_model_name_or_path,
-            instance_prompt=args.instance_prompt,
-            validation_prompt=validation_prompt,
-            repo_folder=args.output_dir,
-            quant_training=quant_training,
-        )
-
-        if args.push_to_hub:
-            upload_folder(
-                repo_id=repo_id,
-                folder_path=args.output_dir,
-                commit_message="End of training",
-                ignore_patterns=["step_*", "epoch_*"],
-            )
 
     accelerator.end_training()
 

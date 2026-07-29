@@ -1,0 +1,7 @@
+accelerate
+datasets
+diffusers
+peft
+torch
+torchvision
+transformers
