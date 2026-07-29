@@ -643,8 +643,6 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
-    parser.add_argument("--enable_npu_flash_attention", action="store_true", help="Enabla Flash Attention for NPU")
-    parser.add_argument("--fsdp_text_encoder", action="store_true", help="Use FSDP for text encoder")
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -1109,36 +1107,20 @@ def main(args):
             if "load_in_4bit" in config_kwargs and config_kwargs["load_in_4bit"]:
                 config_kwargs["bnb_4bit_compute_dtype"] = weight_dtype
         quantization_config = BitsAndBytesConfig(**config_kwargs)
-
-    transformer = ZImageTransformer2DModel.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="transformer",
-        revision=args.revision,
-        variant=args.variant,
-        quantization_config=quantization_config,
-        torch_dtype=weight_dtype,
-    )
-    if args.bnb_quantization_config_path is not None:
-        transformer = prepare_model_for_kbit_training(transformer, use_gradient_checkpointing=False)
+        for k, v in config_kwargs.items():
+            print(f"{k}: {v}")
 
     text_encoder = Qwen3Model.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="text_encoder",
         revision=args.revision,
         variant=args.variant,
+        torch_dtype=weight_dtype,
     )
     text_encoder.requires_grad_(False)
 
     # We only train the additional adapter LoRA layers
-    transformer.requires_grad_(False)
     vae.requires_grad_(False)
-
-    if args.enable_npu_flash_attention:
-        if is_torch_npu_available():
-            logger.info("npu flash attention enabled.")
-            transformer.set_attention_backend("_native_npu")
-        else:
-            raise ValueError("npu flash attention requires torch_npu extensions and is supported only on npu device ")
 
     if torch.backends.mps.is_available() and weight_dtype == torch.bfloat16:
         # due to pytorch#99272, MPS does not yet support bfloat16.
@@ -1156,13 +1138,6 @@ def main(args):
     )
 
     is_fsdp = getattr(accelerator.state, "fsdp_plugin", None) is not None
-    if not is_fsdp:
-        transformer.to(**transformer_to_kwargs)
-
-    if args.do_fp8_training:
-        convert_to_float8_training(
-            transformer, module_filter_fn=module_filter_fn, config=Float8LinearConfig(pad_inner_dim=True)
-        )
 
     text_encoder.to(**to_kwargs)
     # Initialize a text encoding pipeline and keep it to CPU for now.
@@ -1175,24 +1150,6 @@ def main(args):
         scheduler=None,
         revision=args.revision,
     )
-
-    if args.gradient_checkpointing:
-        transformer.enable_gradient_checkpointing()
-
-    if args.lora_layers is not None:
-        target_modules = [layer.strip() for layer in args.lora_layers.split(",")]
-    else:
-        target_modules = ["to_k", "to_q", "to_v", "to_out.0"]
-
-    # now we will add new LoRA weights the transformer layers
-    transformer_lora_config = LoraConfig(
-        r=args.rank,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        init_lora_weights="gaussian",
-        target_modules=target_modules,
-    )
-    transformer.add_adapter(transformer_lora_config)
 
     def unwrap_model(model):
         model = accelerator.unwrap_model(model)
@@ -1300,11 +1257,153 @@ def main(args):
             args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
         )
 
-    # Make sure the trainable params are in float32.
-    if args.mixed_precision == "fp16":
-        models = [transformer]
-        # only upcast trainable parameters (LoRA) into fp32
-        cast_training_params(models, dtype=torch.float32)
+    # Resolve the bucketing mode. Bucketing must be enabled explicitly with --use_aspect_ratio_buckets;
+    # a bucket list without that flag is an error. With the flag, an explicit --aspect_ratio_buckets list
+    # drives assignment, otherwise buckets are computed on the fly inside the dataset. Without the flag a
+    # single square bucket reproduces the fixed-size resize + crop.
+    if args.aspect_ratio_buckets is not None and not args.use_aspect_ratio_buckets:
+        raise ValueError("--aspect_ratio_buckets requires --use_aspect_ratio_buckets to be set.")
+    if args.aspect_ratio_buckets is not None:
+        buckets = parse_buckets_string(args.aspect_ratio_buckets)
+        use_aspect_ratio_buckets = False
+        logger.info(f"Using explicit aspect ratio buckets: {buckets}")
+    elif args.use_aspect_ratio_buckets:
+        buckets = None
+        use_aspect_ratio_buckets = True
+        logger.info(
+            "No --aspect_ratio_buckets provided; auto-computing aspect ratio buckets on the fly from --resolution."
+        )
+    else:
+        buckets = [(args.resolution, args.resolution)]
+        use_aspect_ratio_buckets = False
+
+    # Dataset and DataLoaders creation:
+    train_dataset = DreamBoothDataset(
+        instance_data_root=args.instance_data_dir,
+        instance_prompt=args.instance_prompt,
+        class_prompt=args.class_prompt,
+        class_data_root=args.class_data_dir if args.with_prior_preservation else None,
+        class_num=args.num_class_images,
+        size=args.resolution,
+        repeats=args.repeats,
+        center_crop=args.center_crop,
+        buckets=buckets,
+        use_aspect_ratio_buckets=use_aspect_ratio_buckets,
+    )
+    has_step_indexed_caches = precompute_latents = args.cache_latents or train_dataset.custom_instance_prompts
+    batch_sampler = BucketBatchSampler(
+        train_dataset,
+        batch_size=args.train_batch_size,
+        drop_last=True,
+        shuffle_batches_each_epoch=not has_step_indexed_caches,
+    )
+    train_dataloader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_sampler=batch_sampler,
+        collate_fn=lambda examples: collate_fn(examples, args.with_prior_preservation),
+        num_workers=args.dataloader_num_workers,
+    )
+
+    def compute_text_embeddings(prompt, text_encoding_pipeline):
+        with torch.no_grad():
+            prompt_embeds, _ = text_encoding_pipeline.encode_prompt(
+                prompt=prompt,
+                max_sequence_length=args.max_sequence_length,
+            )
+        return prompt_embeds
+
+    # If no type of tuning is done on the text_encoder and custom instance prompts are NOT
+    # provided (i.e. the --instance_prompt is used for all images), we encode the instance prompt once to avoid
+    # the redundant encoding.
+    if not train_dataset.custom_instance_prompts:
+        text_encoding_pipeline.to("cpu")
+        instance_prompt_hidden_states = compute_text_embeddings(args.instance_prompt, text_encoding_pipeline)
+
+    # Handle class prompt for prior-preservation.
+    if args.with_prior_preservation:
+        text_encoding_pipeline.to("cpu")
+        class_prompt_hidden_states = compute_text_embeddings(args.class_prompt, text_encoding_pipeline)
+    validation_embeddings = {}
+    if args.validation_prompt is not None:
+        text_encoding_pipeline.to("cpu")
+        validation_embeddings["prompt_embeds"] = compute_text_embeddings(
+            args.validation_prompt, text_encoding_pipeline
+        )
+
+    # If custom instance prompts are NOT provided (i.e. the instance prompt is used for all images),
+    # pack the statically computed variables appropriately here. This is so that we don't
+    # have to pass them to the dataloader.
+    if not train_dataset.custom_instance_prompts:
+        prompt_embeds = instance_prompt_hidden_states
+        if args.with_prior_preservation:
+            prompt_embeds = torch.cat([prompt_embeds, class_prompt_hidden_states], dim=0)
+
+    # if cache_latents is set to True, we encode images to latents and store them.
+    # Similar to pre-encoding in the case of a single instance prompt, if custom prompts are provided
+    # we encode them in advance as well.
+    if precompute_latents:
+        prompt_embeds_cache = []
+        latents_cache = []
+        for batch in tqdm(train_dataloader, desc="Caching latents"):
+            with torch.no_grad():
+                if args.cache_latents:
+                    with offload_models(vae, device=accelerator.device, offload=args.offload):
+                        batch["pixel_values"] = batch["pixel_values"].to(
+                            accelerator.device, non_blocking=True, dtype=vae.dtype
+                        )
+                        latents_cache.append(vae.encode(batch["pixel_values"]).latent_dist)
+                if train_dataset.custom_instance_prompts:
+                    text_encoding_pipeline.to("cpu")
+                    prompt_embeds = compute_text_embeddings(batch["prompts"], text_encoding_pipeline)
+                    prompt_embeds_cache.append(prompt_embeds)
+
+    # move back to cpu before deleting to ensure memory is freed see: https://github.com/huggingface/diffusers/issues/11376#issue-3008144624
+    if args.cache_latents:
+        vae = vae.to("cpu")
+        del vae
+
+    # move back to cpu before deleting to ensure memory is freed see: https://github.com/huggingface/diffusers/issues/11376#issue-3008144624
+    text_encoding_pipeline = text_encoding_pipeline.to("cpu")
+    del text_encoder, tokenizer
+    free_memory()
+
+    transformer = ZImageTransformer2DModel.from_pretrained(
+        args.pretrained_model_name_or_path,
+        subfolder="transformer",
+        revision=args.revision,
+        variant=args.variant,
+        quantization_config=quantization_config,
+        torch_dtype=weight_dtype,
+    )
+    if args.bnb_quantization_config_path is not None:
+        transformer = prepare_model_for_kbit_training(transformer, use_gradient_checkpointing=False)
+    transformer.requires_grad_(False)
+
+    if not is_fsdp:
+        transformer.to(**transformer_to_kwargs)
+
+    if args.do_fp8_training:
+        convert_to_float8_training(
+            transformer, module_filter_fn=module_filter_fn, config=Float8LinearConfig(pad_inner_dim=True)
+        )
+
+    if args.gradient_checkpointing:
+         transformer.enable_gradient_checkpointing()
+    
+    if args.lora_layers is not None:
+        target_modules = [layer.strip() for layer in args.lora_layers.split(",")]
+    else:
+        target_modules = ["to_k", "to_q", "to_v", "to_out.0"]
+
+    # now we will add new LoRA weights the transformer layers
+    transformer_lora_config = LoraConfig(
+        r=args.rank,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        init_lora_weights="gaussian",
+        target_modules=target_modules,
+    )
+    transformer.add_adapter(transformer_lora_config)
 
     transformer_lora_parameters = list(filter(lambda p: p.requires_grad, transformer.parameters()))
 
@@ -1369,134 +1468,6 @@ def main(args):
             use_bias_correction=args.prodigy_use_bias_correction,
             safeguard_warmup=args.prodigy_safeguard_warmup,
         )
-
-    # Resolve the bucketing mode. Bucketing must be enabled explicitly with --use_aspect_ratio_buckets;
-    # a bucket list without that flag is an error. With the flag, an explicit --aspect_ratio_buckets list
-    # drives assignment, otherwise buckets are computed on the fly inside the dataset. Without the flag a
-    # single square bucket reproduces the fixed-size resize + crop.
-    if args.aspect_ratio_buckets is not None and not args.use_aspect_ratio_buckets:
-        raise ValueError("--aspect_ratio_buckets requires --use_aspect_ratio_buckets to be set.")
-    if args.aspect_ratio_buckets is not None:
-        buckets = parse_buckets_string(args.aspect_ratio_buckets)
-        use_aspect_ratio_buckets = False
-        logger.info(f"Using explicit aspect ratio buckets: {buckets}")
-    elif args.use_aspect_ratio_buckets:
-        buckets = None
-        use_aspect_ratio_buckets = True
-        logger.info(
-            "No --aspect_ratio_buckets provided; auto-computing aspect ratio buckets on the fly from --resolution."
-        )
-    else:
-        buckets = [(args.resolution, args.resolution)]
-        use_aspect_ratio_buckets = False
-
-    # Dataset and DataLoaders creation:
-    train_dataset = DreamBoothDataset(
-        instance_data_root=args.instance_data_dir,
-        instance_prompt=args.instance_prompt,
-        class_prompt=args.class_prompt,
-        class_data_root=args.class_data_dir if args.with_prior_preservation else None,
-        class_num=args.num_class_images,
-        size=args.resolution,
-        repeats=args.repeats,
-        center_crop=args.center_crop,
-        buckets=buckets,
-        use_aspect_ratio_buckets=use_aspect_ratio_buckets,
-    )
-    has_step_indexed_caches = precompute_latents = args.cache_latents or train_dataset.custom_instance_prompts
-    batch_sampler = BucketBatchSampler(
-        train_dataset,
-        batch_size=args.train_batch_size,
-        drop_last=True,
-        shuffle_batches_each_epoch=not has_step_indexed_caches,
-    )
-    train_dataloader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_sampler=batch_sampler,
-        collate_fn=lambda examples: collate_fn(examples, args.with_prior_preservation),
-        num_workers=args.dataloader_num_workers,
-    )
-
-    def compute_text_embeddings(prompt, text_encoding_pipeline):
-        with torch.no_grad():
-            prompt_embeds, _ = text_encoding_pipeline.encode_prompt(
-                prompt=prompt,
-                max_sequence_length=args.max_sequence_length,
-            )
-        return prompt_embeds
-
-    # If no type of tuning is done on the text_encoder and custom instance prompts are NOT
-    # provided (i.e. the --instance_prompt is used for all images), we encode the instance prompt once to avoid
-    # the redundant encoding.
-    if not train_dataset.custom_instance_prompts:
-        with offload_models(text_encoding_pipeline, device=accelerator.device, offload=args.offload):
-            instance_prompt_hidden_states = compute_text_embeddings(args.instance_prompt, text_encoding_pipeline)
-
-    # Handle class prompt for prior-preservation.
-    if args.with_prior_preservation:
-        with offload_models(text_encoding_pipeline, device=accelerator.device, offload=args.offload):
-            class_prompt_hidden_states = compute_text_embeddings(args.class_prompt, text_encoding_pipeline)
-    validation_embeddings = {}
-    if args.validation_prompt is not None:
-        with offload_models(text_encoding_pipeline, device=accelerator.device, offload=args.offload):
-            validation_embeddings["prompt_embeds"] = compute_text_embeddings(
-                args.validation_prompt, text_encoding_pipeline
-            )
-
-    # Init FSDP for text encoder
-    if args.fsdp_text_encoder:
-        fsdp_kwargs = get_fsdp_kwargs_from_accelerator(accelerator)
-        text_encoder_fsdp = wrap_with_fsdp(
-            model=text_encoding_pipeline.text_encoder,
-            device=accelerator.device,
-            offload=args.offload,
-            limit_all_gathers=True,
-            use_orig_params=True,
-            fsdp_kwargs=fsdp_kwargs,
-        )
-
-        text_encoding_pipeline.text_encoder = text_encoder_fsdp
-        dist.barrier()
-
-    # If custom instance prompts are NOT provided (i.e. the instance prompt is used for all images),
-    # pack the statically computed variables appropriately here. This is so that we don't
-    # have to pass them to the dataloader.
-    if not train_dataset.custom_instance_prompts:
-        prompt_embeds = instance_prompt_hidden_states
-        if args.with_prior_preservation:
-            prompt_embeds = torch.cat([prompt_embeds, class_prompt_hidden_states], dim=0)
-
-    # if cache_latents is set to True, we encode images to latents and store them.
-    # Similar to pre-encoding in the case of a single instance prompt, if custom prompts are provided
-    # we encode them in advance as well.
-    if precompute_latents:
-        prompt_embeds_cache = []
-        latents_cache = []
-        for batch in tqdm(train_dataloader, desc="Caching latents"):
-            with torch.no_grad():
-                if args.cache_latents:
-                    with offload_models(vae, device=accelerator.device, offload=args.offload):
-                        batch["pixel_values"] = batch["pixel_values"].to(
-                            accelerator.device, non_blocking=True, dtype=vae.dtype
-                        )
-                        latents_cache.append(vae.encode(batch["pixel_values"]).latent_dist)
-                if train_dataset.custom_instance_prompts:
-                    if args.fsdp_text_encoder:
-                        prompt_embeds = compute_text_embeddings(batch["prompts"], text_encoding_pipeline)
-                    else:
-                        with offload_models(text_encoding_pipeline, device=accelerator.device, offload=args.offload):
-                            prompt_embeds = compute_text_embeddings(batch["prompts"], text_encoding_pipeline)
-                    prompt_embeds_cache.append(prompt_embeds)
-
-    # move back to cpu before deleting to ensure memory is freed see: https://github.com/huggingface/diffusers/issues/11376#issue-3008144624
-    if args.cache_latents:
-        vae = vae.to("cpu")
-        del vae
-
-    # move back to cpu before deleting to ensure memory is freed see: https://github.com/huggingface/diffusers/issues/11376#issue-3008144624
-    text_encoding_pipeline = text_encoding_pipeline.to("cpu")
-    del text_encoder, tokenizer
-    free_memory()
 
     # Scheduler and math around the number of training steps.
     # Check the PR https://github.com/huggingface/diffusers/pull/8312 for detailed explanation.
@@ -1622,10 +1593,7 @@ def main(args):
                 # Convert images to latent space
                 if args.cache_latents:
                     model_input = latents_cache[step].mode()
-                else:
-                    with offload_models(vae, device=accelerator.device, offload=args.offload):
-                        pixel_values = batch["pixel_values"].to(device=accelerator.device, dtype=vae.dtype)
-                        model_input = vae.encode(pixel_values).latent_dist.mode()
+                    model_input = model_input.to(device=accelerator.device, dtype=weight_dtype)
 
                 model_input = (model_input - vae_config_shift_factor) * vae_config_scaling_factor
                 # Sample noise that we'll add to the latents
@@ -1653,7 +1621,6 @@ def main(args):
 
                 noisy_model_input_5d = noisy_model_input.unsqueeze(2)  # (B, C, H, W) -> (B, C, 1, H, W)
                 noisy_model_input_list = list(noisy_model_input_5d.unbind(dim=0))  # List of (C, 1, H, W)
-
                 model_pred_list = transformer(
                     noisy_model_input_list,
                     timestep_normalized,
