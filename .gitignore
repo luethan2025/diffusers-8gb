@@ -8,4 +8,5 @@ diffusers/
 *.bin
 *.pkl
 scripts/
-!scripts/train_dreambooth_lora_z_image_dog.sh
+!scripts/dreambooth/train_dreambooth_lora_z_image_dog.sh
+*.csv
