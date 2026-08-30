@@ -57,7 +57,7 @@ from peft import LoraConfig, prepare_model_for_kbit_training, set_peft_model_sta
 from peft.utils import get_peft_model_state_dict
 from PIL import Image
 from PIL.ImageOps import exif_transpose
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Subset
 from torch.utils.data.sampler import BatchSampler
 from torchvision import transforms
 from torchvision.transforms import functional as TF
@@ -263,7 +263,7 @@ def parse_args(input_args=None):
         "--instance_prompt",
         type=str,
         default=None,
-        required=True,
+        required=False,
         help="The prompt with identifier specifying the instance, e.g. 'photo of a TOK dog', 'in the style of TOK'",
     )
     parser.add_argument(
@@ -277,6 +277,12 @@ def parse_args(input_args=None):
         type=int,
         default=512,
         help="Maximum sequence length to use with with the T5 text encoder",
+    )
+    parser.add_argument(
+        "--num_samples",
+        type=int,
+        default=20,
+        help="Number of training images to use.",
     )
 
     parser.add_argument(
@@ -720,15 +726,14 @@ class DreamBoothDataset(Dataset):
             except ImportError:
                 raise ImportError(
                     "You are trying to load your data using the datasets library. If you wish to train using custom "
-                    "captions please install the datasets library: `pip install datasets`. If you wish to load a "
-                    "local folder containing images only, specify --instance_data_dir instead."
+                    "captions please install the datasets library: `pip install datasets`."
                 )
             # Downloading and loading a dataset from the hub.
             # See more about loading custom images at
             # https://huggingface.co/docs/datasets/v2.0.0/en/dataset_script
             dataset = load_dataset(
-                args.dataset_name,
-                args.dataset_config_name,
+                "imagefolder",
+                data_dir=args.dataset_name,
                 cache_dir=args.cache_dir,
             )
             # Preprocessing the datasets.
@@ -752,6 +757,7 @@ class DreamBoothDataset(Dataset):
                     "contains captions/prompts for the images, make sure to specify the "
                     "column as --caption_column"
                 )
+                custom_instance_prompts = None
                 self.custom_instance_prompts = None
             else:
                 if args.caption_column not in column_names:
@@ -759,17 +765,25 @@ class DreamBoothDataset(Dataset):
                         f"`--caption_column` value '{args.caption_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
                     )
                 custom_instance_prompts = dataset["train"][args.caption_column]
-                # create final list of captions according to --repeats
-                self.custom_instance_prompts = []
-                for caption in custom_instance_prompts:
-                    self.custom_instance_prompts.extend(itertools.repeat(caption, repeats))
         else:
             self.instance_data_root = Path(instance_data_root)
             if not self.instance_data_root.exists():
                 raise ValueError("Instance images root doesn't exists.")
 
             instance_images = [Image.open(path) for path in list(Path(instance_data_root).iterdir())]
-            self.custom_instance_prompts = None
+            custom_instance_prompts = None
+
+        num_samples = min(args.num_samples, len(instance_images))
+        sample_indices = random.sample(range(len(instance_images)), num_samples)
+        instance_images = [instance_images[index] for index in sample_indices]
+        if custom_instance_prompts is not None:
+            custom_instance_prompts = [custom_instance_prompts[index] for index in sample_indices]
+
+        self.custom_instance_prompts = None
+        if custom_instance_prompts is not None:
+            self.custom_instance_prompts = []
+            for caption in custom_instance_prompts:
+                self.custom_instance_prompts.extend(itertools.repeat(caption, repeats))
 
         self.instance_images = []
         for img in instance_images:
