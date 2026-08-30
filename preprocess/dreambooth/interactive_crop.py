@@ -29,7 +29,7 @@ def parse_args(input_args=None):
     return args
 
 
-def interactive_crop_position(image_cv, crop_size):
+def interactive_crop_position(image_cv, crop_size, window_name):
     height, width = image_cv.shape[:2]
 
     max_display = 900
@@ -60,8 +60,6 @@ def interactive_crop_position(image_cv, crop_size):
         elif event == cv2.EVENT_LBUTTONUP:
             dragging["active"] = False
 
-    window_name = "Drag crop box, press ENTER to confirm"
-    cv2.namedWindow(window_name)
     cv2.setMouseCallback(window_name, on_mouse)
 
     while True:
@@ -74,14 +72,12 @@ def interactive_crop_position(image_cv, crop_size):
 
         cv2.imshow(window_name, frame)
         key = cv2.waitKey(20) & 0xFF
-        if key == 13: # enter
+        if key == 13:  # enter
             break
-        elif key == 27: # esc
+        elif key == 27:  # esc
             pos[0] = (disp_w - disp_crop_size) // 2
             pos[1] = (disp_h - disp_crop_size) // 2
             break
-
-    cv2.destroyWindow(window_name)
 
     left = int(pos[0] / scale)
     top = int(pos[1] / scale)
@@ -101,6 +97,9 @@ def main():
             if f.lower().endswith(".jpg")
     ]
 
+    window_name = "Drag crop box, press ENTER to confirm"
+    cv2.namedWindow(window_name)
+
     for image_file in image_files:
         image_path = os.path.join(args.instance_data_dir, image_file)
         image = Image.open(image_path).convert("RGB")
@@ -108,7 +107,7 @@ def main():
         crop_size = min(width, height)
 
         image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        left, top = interactive_crop_position(image_cv, crop_size)
+        left, top = interactive_crop_position(image_cv, crop_size, window_name)
         right = left + crop_size
         bottom = top + crop_size
 
@@ -120,6 +119,8 @@ def main():
 
         output_path = os.path.join(output_dir, image_file)
         cropped_image.save(output_path)
+
+    cv2.destroyWindow(window_name)
 
 
 if __name__ == "__main__":
