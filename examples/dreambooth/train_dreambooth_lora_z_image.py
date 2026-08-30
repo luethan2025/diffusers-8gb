@@ -731,11 +731,18 @@ class DreamBoothDataset(Dataset):
             # Downloading and loading a dataset from the hub.
             # See more about loading custom images at
             # https://huggingface.co/docs/datasets/v2.0.0/en/dataset_script
-            dataset = load_dataset(
-                "imagefolder",
-                data_dir=args.dataset_name,
-                cache_dir=args.cache_dir,
-            )
+            if args.instance_prompt is not None:
+                dataset = load_dataset(
+                    args.dataset_name,
+                    args.dataset_config_name,
+                    cache_dir=args.cache_dir,
+                )
+            else:
+                dataset = load_dataset(
+                    "imagefolder",
+                    data_dir=args.dataset_name,
+                    cache_dir=args.cache_dir,
+                )
             # Preprocessing the datasets.
             column_names = dataset["train"].column_names
 
@@ -758,7 +765,6 @@ class DreamBoothDataset(Dataset):
                     "column as --caption_column"
                 )
                 custom_instance_prompts = None
-                self.custom_instance_prompts = None
             else:
                 if args.caption_column not in column_names:
                     raise ValueError(
