@@ -65,16 +65,12 @@ def interactive_crop_position(image_cv, crop_size):
     cv2.setMouseCallback(window_name, on_mouse)
 
     while True:
-        overlay = display_base.copy()
-        cv2.rectangle(
-            overlay,
-            (pos[0], pos[1]),
-            (pos[0] + disp_crop_size, pos[1] + disp_crop_size),
-            (0, 0, 0),
-            -1,
-        )
+        overlay = np.zeros_like(display_base)
         alpha = 0.4
-        frame = cv2.addWeighted(overlay, alpha, display_base, 1 - alpha, 0)
+        frame = cv2.addWeighted(display_base, alpha, overlay, 1 - alpha, 0)
+
+        frame[pos[1]:pos[1] + disp_crop_size, pos[0]:pos[0] + disp_crop_size] = \
+            display_base[pos[1]:pos[1] + disp_crop_size, pos[0]:pos[0] + disp_crop_size]
 
         cv2.imshow(window_name, frame)
         key = cv2.waitKey(20) & 0xFF
