@@ -7,6 +7,7 @@ from PIL import Image
 from tqdm.auto import tqdm
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
+
 def parse_args(input_args=None):
     parser = argparse.ArgumentParser(description="Simple example of a captioning script.")
     parser.add_argument(
@@ -68,6 +69,7 @@ def parse_args(input_args=None):
     else:
         args = parser.parse_args()
     return args
+
 
 def main(args):
     image_files = sorted([
@@ -132,6 +134,7 @@ def main(args):
             caption = output_text[0] if isinstance(output_text, list) else output_text
             caption = caption.replace("\n", "")
             writer.writerow([image_file, caption])
+
 
 if __name__ == "__main__":
     args = parse_args()
