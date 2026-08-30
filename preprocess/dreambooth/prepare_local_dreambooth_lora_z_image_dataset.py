@@ -8,7 +8,7 @@ from tqdm.auto import tqdm
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
 def parse_args(input_args=None):
-    parser = argparse.ArgumentParser(description="Simple example of a training script.")
+    parser = argparse.ArgumentParser(description="Simple example of a captioning script.")
     parser.add_argument(
         "--pretrained_model_name_or_path",
         type=str,
