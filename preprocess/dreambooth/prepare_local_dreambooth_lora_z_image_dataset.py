@@ -52,7 +52,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--image_column",
         type=str,
-        default="image",
+        default="file_name",
         help="The column of the dataset containing the target image. By "
         "default, the standard Image Dataset maps out 'file_name' "
         "to 'image'.",
@@ -60,7 +60,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--caption_column",
         type=str,
-        default=None,
+        default="text",
         help="The column of the dataset containing the instance prompt for each image",
     )
 
@@ -133,7 +133,7 @@ def main(args):
         for image_file, output_text in image_file_captions_pairs:
             caption = output_text[0] if isinstance(output_text, list) else output_text
             caption = caption.replace("\n", "")
-            writer.writerow([image_file, caption])
+            writer.writerow([os.path.basename(image_file), caption])
 
 
 if __name__ == "__main__":
