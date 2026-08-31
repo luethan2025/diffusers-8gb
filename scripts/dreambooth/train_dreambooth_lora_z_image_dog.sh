@@ -7,7 +7,7 @@ export BNB_QUANTIZATION_CONFIG_PATH="configs/train_dreambooth_lora_z_image.json"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 accelerate launch examples/dreambooth/train_dreambooth_lora_z_image.py \
-  --pretrained_model_name_or_path=$MODEL_NAME  \
+  --pretrained_model_name_or_path=$MODEL_NAME \
   --instance_data_dir=$INSTANCE_DIR \
   --output_dir=$OUTPUT_DIR \
   --mixed_precision="bf16" \
