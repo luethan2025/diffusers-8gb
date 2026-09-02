@@ -1,3 +1,6 @@
 [submodule "Real-ESRGAN"]
 	path = Real-ESRGAN
 	url = https://github.com/luethan2025/Real-ESRGAN.git
+[submodule "diffusers"]
+	path = diffusers
+	url = https://github.com/luethan2025/diffusers.git

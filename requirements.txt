@@ -1,7 +1,6 @@
 accelerate
 bitsandbytes
 datasets
-diffusers
 ipykernel
 peft
 torch
