@@ -11,7 +11,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--instance_data_dir",
         type=str,
-        default=None,
+        required=True,
         help="A folder containing the training data.",
     )
     parser.add_argument(
