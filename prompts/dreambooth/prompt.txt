@@ -1,4 +1,4 @@
-Caption this image for Dreambooth/LoRA training data.
+Caption this image for Dreambooth/LoRA training data. Be as descriptive as possible.
 
 Rules:
 - Start with the token: {SPECIAL_TOKEN}
@@ -6,7 +6,6 @@ Rules:
 - Describe ONLY variable elements: pose, action, expression, clothing, background, lighting, camera angle, art style/medium.
 - Do NOT describe {CLASS_INSTANCE} — that's the fixed identity the trigger word already represents. Skip facial features, body type, hair color/style, or anything invariant across the dataset.
 - No subjective words (beautiful, stunning, amazing).
-- 15-30 words total.
 - Output ONLY the caption text. No preamble, no explanation, no quotes.
 
 Example output format:
