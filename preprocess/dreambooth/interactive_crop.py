@@ -11,8 +11,14 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--instance_data_dir",
         type=str,
-        required=True,
+        default=None,
         help="A folder containing the training data.",
+    )
+    parser.add_argument(
+        "--instance_data",
+        type=str,
+        default=None,
+        help="Training data file.",
     )
     parser.add_argument(
         "--resolution",
@@ -89,19 +95,27 @@ def interactive_crop_position(image_cv, crop_size, window_name):
 def main():
     args = parse_args()
 
-    output_dir = os.path.join(args.instance_data_dir, "cropped")
+    output_dir = "cropped"
     os.makedirs(output_dir, exist_ok=True)
 
-    image_files = sorted([
-        f for f in os.listdir(args.instance_data_dir)
-            if f.lower().endswith(".jpg")
-    ])
+    if args.instance_data_dir is not None:
+        image_files = sorted([
+            f for f in os.listdir(args.instance_data_dir)
+                if f.lower().endswith(".jpg")
+        ])
+    elif args.instance_data is not None:
+        image_files = [args.instance_data]
+    else:
+        raise ValueError("Either --instance_data_dir or --instance_data must be provided.")
 
     window_name = "Drag crop box, press ENTER to confirm"
     cv2.namedWindow(window_name)
 
     for image_file in image_files:
-        image_path = os.path.join(args.instance_data_dir, image_file)
+        if args.instance_data_dir is not None:
+            image_path = os.path.join(args.instance_data_dir, image_file)
+        else:
+            image_path = args.instance_data
         image = Image.open(image_path).convert("RGB")
         width, height = image.size
         crop_size = min(width, height)
@@ -117,7 +131,7 @@ def main():
             Image.Resampling.LANCZOS,
         )
 
-        output_path = os.path.join(output_dir, image_file)
+        output_path = os.path.join(output_dir, os.path.basename(image_file))
         cropped_image.save(output_path)
 
     cv2.destroyWindow(window_name)
