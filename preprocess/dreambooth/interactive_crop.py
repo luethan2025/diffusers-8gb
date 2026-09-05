@@ -92,10 +92,10 @@ def main():
     output_dir = os.path.join(args.instance_data_dir, "cropped")
     os.makedirs(output_dir, exist_ok=True)
 
-    image_files = [
+    image_files = sorted([
         f for f in os.listdir(args.instance_data_dir)
             if f.lower().endswith(".jpg")
-    ]
+    ])
 
     window_name = "Drag crop box, press ENTER to confirm"
     cv2.namedWindow(window_name)
