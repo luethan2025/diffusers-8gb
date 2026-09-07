@@ -1,12 +1,186 @@
-Caption this image for Dreambooth/LoRA training data. Be as descriptive as possible.
+Caption this image for DreamBooth/LoRA identity training.
 
-Rules:
-- Start with the token: {SPECIAL_TOKEN}
-- Use comma-separated tags/phrases, NOT full sentences.
-- Describe ONLY variable elements: pose, action, expression, clothing, background, lighting, camera angle, art style/medium.
-- Do NOT describe {CLASS_INSTANCE} — that's the fixed identity the trigger word already represents. Skip facial features, body type, hair color/style, or anything invariant across the dataset.
-- No subjective words (beautiful, stunning, amazing).
-- Output ONLY the caption text. No preamble, no explanation, no quotes.
+Your task is to generate ONE concise training caption that describes the image while keeping the identity represented exclusively by the trigger token.
 
-Example output format:
-{TRIGGER_WORD}, sitting on wooden chair, arms crossed, wearing red jacket, outdoor cafe background, soft afternoon lighting, three-quarter angle
+REQUIRED FORMAT
+
+Start with the exact token: {SPECIAL_TOKEN}
+Use comma-separated tags or short descriptive phrases.
+Do NOT write a full sentence.
+Output ONLY the caption.
+Do NOT use quotation marks, explanations, labels, bullet points, or additional text.
+End without commentary or justification.
+
+IDENTITY HANDLING
+
+The trigger token {SPECIAL_TOKEN} represents the person's identity.
+Do NOT describe {CLASS_INSTANCE} or use words that redundantly identify the person.
+Do NOT describe persistent physical characteristics that belong to the person's identity.
+NEVER describe:
+facial features
+facial structure
+eye color or eye shape
+nose, lips, jaw, cheeks, or other facial anatomy
+skin tone or complexion
+body shape
+body proportions
+height
+hair color
+hairstyle or haircut
+other persistent physical characteristics
+Do not use generic identity descriptions such as "young woman" or "handsome man."
+Do not infer age, ethnicity, gender, attractiveness, personality, or identity from appearance.
+
+DESCRIBE ONLY VARIABLE VISUAL INFORMATION
+
+Describe attributes that can change from one training image to another, when clearly visible:
+
+pose and body position
+action or activity
+facial expression, but NOT facial anatomy
+clothing and clothing colors
+shoes
+jewelry and accessories
+glasses, hats, bags, etc.
+objects being held or interacted with
+environment and setting
+useful background context
+lighting
+camera framing
+camera angle
+viewpoint
+orientation
+intentionally visible photographic or artistic style
+
+Prioritize information that helps distinguish this image from other training images.
+
+ACCURACY RULES
+
+Describe ONLY what is clearly visible.
+Never guess, assume, or invent details.
+If an attribute is ambiguous or partially obscured, omit it.
+Do not infer objects, locations, lighting, actions, or clothing that cannot be confidently identified.
+Do not describe hidden or cropped body parts.
+Do not describe irrelevant background details.
+Do not describe temporary visual artifacts as meaningful attributes.
+
+CLOTHING AND ACCESSORIES
+
+When clearly visible, describe the main clothing and accessories using concise, specific terms.
+
+Prefer:
+"black leather jacket, white T-shirt, blue jeans"
+
+over:
+"wearing a fashionable outfit"
+
+Do not add subjective descriptions such as "stylish," "beautiful," "elegant," or "attractive."
+
+POSE, EXPRESSION, AND VIEWPOINT
+
+Describe the person's observable pose or action precisely.
+
+Examples:
+
+standing
+sitting on a chair
+walking
+arms crossed
+one hand raised
+holding a phone
+looking toward the camera
+smiling
+neutral expression
+side profile
+three-quarter view
+rear view
+
+Do not infer an action or emotional state that is not visually apparent.
+
+ENVIRONMENT AND BACKGROUND
+
+Describe the setting at a useful level of abstraction.
+
+Prefer:
+"outdoor garden, blurred greenery"
+
+over:
+"garden with three bushes, a stone path, two chairs, and a wooden fence"
+
+Include the general environment when it provides useful variation between images.
+
+LIGHTING
+
+Mention lighting only when it is clearly visible or compositionally meaningful.
+
+Examples:
+
+soft natural lighting
+direct sunlight
+warm indoor lighting
+low-key lighting
+backlighting
+overcast lighting
+
+Do not automatically add "natural lighting" to every photograph.
+
+CAMERA AND COMPOSITION
+
+Use specific framing or viewpoint terms when clearly applicable:
+
+close-up
+head-and-shoulders shot
+upper-body shot
+medium shot
+three-quarter shot
+full-body shot
+wide shot
+side profile
+three-quarter view
+rear view
+low angle
+high angle
+eye-level view
+
+Do not add camera terminology merely because the image is a photograph.
+
+STYLE
+
+Mention art style or medium ONLY when the image clearly has an intentional non-photographic or distinctive visual style.
+
+For ordinary photographs, NEVER add:
+
+realistic photography
+photorealistic
+highly detailed
+high quality
+professional photography
+
+CAPTION CONSTRUCTION
+
+Put the trigger token first.
+Follow it with only the most useful variable visual attributes.
+Prefer concrete nouns and short descriptive phrases.
+Avoid redundant or synonymous tags.
+Do not repeat the same information in different words.
+Keep the caption concise.
+Do not try to describe everything visible.
+The identity token must remain the primary concept.
+
+FINAL VERIFICATION
+
+Before generating the caption, silently check:
+
+Does the caption begin with the exact token {SPECIAL_TOKEN}?
+Did I avoid describing persistent identity characteristics?
+Did I avoid describing {CLASS_INSTANCE}?
+Did I describe only clearly visible information?
+Did I avoid subjective or evaluative language?
+Did I avoid redundant tags?
+Did I include useful variable attributes such as clothing, pose, expression, setting, or framing when applicable?
+Is the caption concise?
+Is the output ONLY the caption?
+
+EXAMPLE
+
+{SPECIAL_TOKEN}, standing beside a wooden railing, one hand touching hair, smiling, wearing a black ribbed dress and necklace, waterfront background, soft natural lighting, upper-body shot, three-quarter view
