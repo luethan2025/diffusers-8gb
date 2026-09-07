@@ -281,7 +281,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--num_samples",
         type=int,
-        default=20,
+        default=1,
         help="Number of training images to use.",
     )
 
@@ -1127,8 +1127,6 @@ def main(args):
             if "load_in_4bit" in config_kwargs and config_kwargs["load_in_4bit"]:
                 config_kwargs["bnb_4bit_compute_dtype"] = weight_dtype
         quantization_config = BitsAndBytesConfig(**config_kwargs)
-        for k, v in config_kwargs.items():
-            print(f"{k}: {v}")
 
     text_encoder = Qwen3Model.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -1537,6 +1535,7 @@ def main(args):
 
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
+    total_trainable_params = sum(p.numel() for p in transformer_lora_parameters)
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_dataset)}")
@@ -1545,7 +1544,15 @@ def main(args):
     logger.info(f"  Instantaneous batch size per device = {args.train_batch_size}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
+    logger.info(f"  Total trainable parameters = {total_trainable_params:,}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
+
+    if quantization_config is not None:
+        logger.info("***** Quantization settings *****")
+        logger.info(f"  load_in_4bit = {quantization_config.load_in_4bit}")
+        logger.info(f"  bnb_4bit_quant_type = {quantization_config.bnb_4bit_quant_type}")
+        logger.info(f"  bnb_4bit_compute_dtype = {quantization_config.bnb_4bit_compute_dtype}")
+        logger.info(f"  bnb_4bit_use_double_quant = {quantization_config.bnb_4bit_use_double_quant}")
     global_step = 0
     first_epoch = 0
 
