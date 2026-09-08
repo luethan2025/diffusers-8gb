@@ -281,7 +281,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--num_samples",
         type=int,
-        default=1,
+        default=20,
         help="Number of training images to use.",
     )
 
