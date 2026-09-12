@@ -1,5 +1,5 @@
 [submodule "Real-ESRGAN"]
-	path = Real-ESRGAN
+	path = inference/sr/Real-ESRGAN
 	url = https://github.com/luethan2025/Real-ESRGAN.git
 [submodule "diffusers"]
 	path = diffusers
