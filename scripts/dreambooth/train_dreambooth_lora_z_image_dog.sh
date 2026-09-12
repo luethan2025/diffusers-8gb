@@ -3,7 +3,7 @@
 export MODEL_NAME="Tongyi-MAI/Z-Image"
 export INSTANCE_DIR="dog"
 export OUTPUT_DIR="trained-z-image-lora"
-export BNB_QUANTIZATION_CONFIG_PATH="configs/train_dreambooth_lora_z_image.json"
+export BNB_QUANTIZATION_CONFIG_PATH="configs/bnb/train_dreambooth_lora_z_image.json"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 accelerate launch examples/dreambooth/train_dreambooth_lora_z_image.py \
