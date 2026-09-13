@@ -190,10 +190,10 @@ def main():
         image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
         crop_result = interactive_crop_position(image_cv, crop_size, window_name)
         if crop_result is KeyAction.PREVIOUS:
-            image_position = max(0, image_position - 1)
+            image_position = (image_position - 1) % len(available_indices)
             continue
         if crop_result is KeyAction.NEXT:
-            image_position = min(len(available_indices) - 1, image_position + 1)
+            image_position = (image_position + 1) % len(available_indices)
             continue
 
         left, top, rotation = crop_result.left, crop_result.top, crop_result.rotation
