@@ -12,7 +12,14 @@ from PIL import Image
 class CropSelection:
     left: int
     top: int
-    rotation: int
+    rotation: "Rotation"
+
+
+class Rotation(Enum):
+    CLOCKWISE_0 = 0
+    CLOCKWISE_90 = 90
+    CLOCKWISE_180 = 180
+    CLOCKWISE_270 = 270
 
 
 class KeyAction(Enum):
@@ -55,7 +62,7 @@ def parse_args(input_args=None):
 
 def interactive_crop_position(image_cv, crop_size, window_name):
     current_image = image_cv.copy()
-    rotation = 0
+    rotation = Rotation.CLOCKWISE_0
     max_display = 1200
 
     while True:
@@ -103,7 +110,7 @@ def interactive_crop_position(image_cv, crop_size, window_name):
             action = action_from_keypress(key)
             match action:
                 case KeyAction.ROTATE:
-                    rotation = (rotation + 90) % 360
+                    rotation = Rotation((rotation.value + 90) % 360)
                     current_image = cv2.rotate(current_image, cv2.ROTATE_90_CLOCKWISE)
                     crop_size = min(current_image.shape[:2])
                     break
@@ -184,13 +191,13 @@ def main():
 
         left, top, rotation = crop_result.left, crop_result.top, crop_result.rotation
         match rotation:
-            case 0:
+            case Rotation.CLOCKWISE_0:
                 rotated_image_cv = image_cv
-            case 90:
+            case Rotation.CLOCKWISE_90:
                 rotated_image_cv = cv2.rotate(image_cv, cv2.ROTATE_90_CLOCKWISE)
-            case 180:
+            case Rotation.CLOCKWISE_180:
                 rotated_image_cv = cv2.rotate(image_cv, cv2.ROTATE_180)
-            case 270:
+            case Rotation.CLOCKWISE_270:
                 rotated_image_cv = cv2.rotate(image_cv, cv2.ROTATE_90_COUNTERCLOCKWISE)
         rotated_crop_size = min(rotated_image_cv.shape[:2])
         right = left + rotated_crop_size
