@@ -8,13 +8,6 @@ import numpy as np
 from PIL import Image
 
 
-@dataclass
-class CropSelection:
-    left: int
-    top: int
-    rotation: "Rotation"
-
-
 class Rotation(Enum):
     CLOCKWISE_0 = 0
     CLOCKWISE_90 = 90
@@ -29,6 +22,13 @@ class KeyAction(Enum):
     NEXT = "next"
     CONFIRM = "confirm"
     RESET = "reset"
+
+
+@dataclass
+class CropSelection:
+    left: int
+    top: int
+    rotation: Rotation
 
 
 def parse_args(input_args=None):
