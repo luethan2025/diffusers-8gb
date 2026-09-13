@@ -121,20 +121,16 @@ def interactive_crop_position(image_cv, crop_size, window_name):
             navigation = navigation_from_key(key)
             if navigation is not None:
                 return navigation
-            if key == 13:  # enter
+            if key == ord("\r"):  # enter
                 left = int(pos[0] / scale)
                 top = int(pos[1] / scale)
                 left = max(0, min(left, width - crop_size))
                 top = max(0, min(top, height - crop_size))
                 return CropSelection(left, top, rotation)
-            elif key == 27:  # esc
+            elif key == ord("\x1b"):  # esc
                 pos[0] = (disp_w - disp_crop_size) // 2
                 pos[1] = (disp_h - disp_crop_size) // 2
-                left = int(pos[0] / scale)
-                top = int(pos[1] / scale)
-                left = max(0, min(left, width - crop_size))
-                top = max(0, min(top, height - crop_size))
-                return CropSelection(left, top, rotation)
+                continue
             elif cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
                 raise SystemExit(0)
 
