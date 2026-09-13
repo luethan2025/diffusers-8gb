@@ -129,7 +129,7 @@ def main():
     gc.collect()
     torch.cuda.empty_cache()
 
-    lora_checkpoint_dirs = [
+    lora_checkpoint_dirs = sorted([
         os.path.join(args.checkpoint_dir, d)
         for d in os.listdir(args.checkpoint_dir)
         if os.path.isdir(os.path.join(args.checkpoint_dir, d))
@@ -137,7 +137,7 @@ def main():
             f.endswith(".safetensors")
             for f in os.listdir(os.path.join(args.checkpoint_dir, d))
         )
-    ] + [args.checkpoint_dir]
+    ], key=lambda x: int(x.split("-")[-1]))
 
     transformer = ZImageTransformer2DModel.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -155,7 +155,8 @@ def main():
     )
 
     for lora_checkpoint_dir in lora_checkpoint_dirs:
-        os.makedirs(os.path.join(args.output_dir, lora_checkpoint_dir), exist_ok=True)
+        output_dir = os.path.join(args.output_dir, lora_checkpoint_dir)
+        os.makedirs(output_dir, exist_ok=True)
         pipe.load_lora_weights(lora_checkpoint_dir)
 
         latents = []
@@ -181,7 +182,7 @@ def main():
             with torch.inference_mode():
                 image = pipe.vae.decode(latent, return_dict=False)[0]
             image = pipe.image_processor.postprocess(image, output_type="pil")[0]
-            image.save(os.path.join(args.output_dir, lora_checkpoint_dir, f"image_{(idx + 1):0{len(str(len(latents)))}d}.png"))
+            image.save(os.path.join(output_dir, f"image_{(idx + 1):0{len(str(len(latents)))}d}.png"))
 
         gc.collect()
         torch.cuda.empty_cache()
