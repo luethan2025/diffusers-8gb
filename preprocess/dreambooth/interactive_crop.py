@@ -20,21 +20,13 @@ class Navigation(Enum):
     NEXT = "next"
 
 
-def navigation_from_key(key):
-    if key in {81, 65361, 1113937, 2424832, 63234}:
-        return Navigation.PREVIOUS
-    if key in {83, 65363, 1113939, 2555904, 63235}:
-        return Navigation.NEXT
-    return None
-
-
-def find_available_image(image_index, step, image_count, completed_indices):
-    candidate = image_index + step
-    while 0 <= candidate < image_count:
-        if candidate not in completed_indices:
-            return candidate
-        candidate += step
-    return image_index
+class KeyAction(Enum):
+    NONE = "none"
+    ROTATE = "rotate"
+    PREVIOUS = "previous"
+    NEXT = "next"
+    CONFIRM = "confirm"
+    RESET = "reset"
 
 
 def parse_args(input_args=None):
@@ -113,26 +105,29 @@ def interactive_crop_position(image_cv, crop_size, window_name):
 
             cv2.imshow(window_name, frame)
             key = cv2.waitKeyEx(20)
-            if key == ord('r') or key == ord('R'):
-                rotation = (rotation + 90) % 360
-                current_image = rotate_image_cv(current_image, 90)
-                crop_size = min(current_image.shape[:2])
-                break
-            navigation = navigation_from_key(key)
-            if navigation is not None:
-                return navigation
-            if key == ord("\r"):  # enter
-                left = int(pos[0] / scale)
-                top = int(pos[1] / scale)
-                left = max(0, min(left, width - crop_size))
-                top = max(0, min(top, height - crop_size))
-                return CropSelection(left, top, rotation)
-            elif key == ord("\x1b"):  # esc
-                pos[0] = (disp_w - disp_crop_size) // 2
-                pos[1] = (disp_h - disp_crop_size) // 2
-                continue
-            elif cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
-                raise SystemExit(0)
+            action = action_from_keypress(key)
+            match action:
+                case KeyAction.ROTATE:
+                    rotation = (rotation + 90) % 360
+                    current_image = rotate_image_cv(current_image, 90)
+                    crop_size = min(current_image.shape[:2])
+                    break
+                case KeyAction.PREVIOUS:
+                    return Navigation.PREVIOUS
+                case KeyAction.NEXT:
+                    return Navigation.NEXT
+                case KeyAction.CONFIRM:
+                    left = int(pos[0] / scale)
+                    top = int(pos[1] / scale)
+                    left = max(0, min(left, width - crop_size))
+                    top = max(0, min(top, height - crop_size))
+                    return CropSelection(left, top, rotation)
+                case KeyAction.RESET:
+                    pos[0] = (disp_w - disp_crop_size) // 2
+                    pos[1] = (disp_h - disp_crop_size) // 2
+                case KeyAction.NONE:
+                    if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+                        raise SystemExit(0)
 
 
 def rotate_image_cv(image_cv, angle_degrees):
@@ -146,6 +141,29 @@ def rotate_image_cv(image_cv, angle_degrees):
     if angle == 270:
         return cv2.rotate(image_cv, cv2.ROTATE_90_COUNTERCLOCKWISE)
     raise ValueError(f"Unsupported rotation angle: {angle_degrees} degrees")
+
+
+def action_from_keypress(key):
+    if key in (ord("r"), ord("R")):
+        return KeyAction.ROTATE
+    if key in {81, 65361, 1113937, 2424832, 63234}:
+        return KeyAction.PREVIOUS
+    if key in {83, 65363, 1113939, 2555904, 63235}:
+        return KeyAction.NEXT
+    if key == ord("\r"):
+        return KeyAction.CONFIRM
+    if key == ord("\x1b"):
+        return KeyAction.RESET
+    return KeyAction.NONE
+
+
+def find_available_image(image_index, step, image_count, completed_indices):
+    candidate = image_index + step
+    while 0 <= candidate < image_count:
+        if candidate not in completed_indices:
+            return candidate
+        candidate += step
+    return image_index
 
 
 def main():
