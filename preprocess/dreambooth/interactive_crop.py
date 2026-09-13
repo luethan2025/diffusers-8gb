@@ -38,13 +38,13 @@ def parse_args(input_args=None):
 def interactive_crop_position(image_cv, crop_size, window_name):
     current_image = image_cv.copy()
     rotation = 0
+    max_display = 1200
 
     while True:
         height, width = current_image.shape[:2]
 
-        max_display = 900
         scale = min(1.0, max_display / max(width, height))
-        disp_w, disp_h = int(width * scale), int(height * scale)
+        disp_w, disp_h = max(1, int(width * scale)), max(1, int(height * scale))
         disp_crop_size = int(crop_size * scale)
 
         display_base = cv2.resize(current_image, (disp_w, disp_h))
@@ -102,10 +102,6 @@ def interactive_crop_position(image_cv, crop_size, window_name):
                 top = max(0, min(top, height - crop_size))
                 return left, top, rotation
 
-        cv2.destroyWindow(window_name)
-        cv2.namedWindow(window_name)
-        cv2.setMouseCallback(window_name, on_mouse)
-
 
 def rotate_image_cv(image_cv, angle_degrees):
     angle = angle_degrees % 360
@@ -137,7 +133,8 @@ def main():
         raise ValueError("Either --instance_data_dir or --instance_data must be provided.")
 
     window_name = "Drag crop box, press ENTER to confirm"
-    cv2.namedWindow(window_name)
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, 1200, 1200)
 
     for image_file in image_files:
         if args.instance_data_dir is not None:
@@ -165,7 +162,7 @@ def main():
         output_path = os.path.join(output_dir, os.path.basename(image_file))
         cropped_image.save(output_path)
 
-    cv2.destroyWindow(window_name)
+    cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
