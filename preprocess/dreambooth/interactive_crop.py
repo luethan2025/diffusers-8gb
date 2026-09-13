@@ -109,7 +109,7 @@ def interactive_crop_position(image_cv, crop_size, window_name):
             match action:
                 case KeyAction.ROTATE:
                     rotation = (rotation + 90) % 360
-                    current_image = rotate_image_cv(current_image, 90)
+                    current_image = cv2.rotate(current_image, cv2.ROTATE_90_CLOCKWISE)
                     crop_size = min(current_image.shape[:2])
                     break
                 case KeyAction.PREVIOUS:
@@ -128,19 +128,6 @@ def interactive_crop_position(image_cv, crop_size, window_name):
                 case KeyAction.NONE:
                     if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
                         raise SystemExit(0)
-
-
-def rotate_image_cv(image_cv, angle_degrees):
-    angle = angle_degrees % 360
-    if angle == 0:
-        return image_cv.copy()
-    if angle == 90:
-        return cv2.rotate(image_cv, cv2.ROTATE_90_CLOCKWISE)
-    if angle == 180:
-        return cv2.rotate(image_cv, cv2.ROTATE_180)
-    if angle == 270:
-        return cv2.rotate(image_cv, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    raise ValueError(f"Unsupported rotation angle: {angle_degrees} degrees")
 
 
 def action_from_keypress(key):
@@ -201,7 +188,15 @@ def main():
             continue
 
         left, top, rotation = crop_result.left, crop_result.top, crop_result.rotation
-        rotated_image_cv = rotate_image_cv(image_cv, rotation)
+        match rotation:
+            case 0:
+                rotated_image_cv = image_cv
+            case 90:
+                rotated_image_cv = cv2.rotate(image_cv, cv2.ROTATE_90_CLOCKWISE)
+            case 180:
+                rotated_image_cv = cv2.rotate(image_cv, cv2.ROTATE_180)
+            case 270:
+                rotated_image_cv = cv2.rotate(image_cv, cv2.ROTATE_90_COUNTERCLOCKWISE)
         rotated_crop_size = min(rotated_image_cv.shape[:2])
         right = left + rotated_crop_size
         bottom = top + rotated_crop_size
