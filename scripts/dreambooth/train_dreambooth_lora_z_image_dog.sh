@@ -30,4 +30,5 @@ accelerate launch examples/dreambooth/train_dreambooth_lora_z_image.py \
   --lr_scheduler="constant" \
   --lr_warmup_steps=100 \
   --max_train_steps=1000 \
+  --resume_from_checkpoint="latest" \
   --seed="0"
