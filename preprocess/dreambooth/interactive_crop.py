@@ -157,15 +157,6 @@ def action_from_keypress(key):
     return KeyAction.NONE
 
 
-def find_available_image(image_index, step, image_count, completed_indices):
-    candidate = image_index + step
-    while 0 <= candidate < image_count:
-        if candidate not in completed_indices:
-            return candidate
-        candidate += step
-    return image_index
-
-
 def main():
     args = parse_args()
 
@@ -187,9 +178,10 @@ def main():
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, 1200, 1200)
 
-    image_index = 0
-    completed_indices = set()
-    while image_index < len(image_files):
+    available_indices = list(range(len(image_files)))
+    image_position = 0
+    while available_indices:
+        image_index = available_indices[image_position]
         image_file = image_files[image_index]
         if args.instance_data_dir is not None:
             image_path = os.path.join(args.instance_data_dir, image_file)
@@ -202,14 +194,10 @@ def main():
         image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
         crop_result = interactive_crop_position(image_cv, crop_size, window_name)
         if crop_result is Navigation.PREVIOUS:
-            image_index = find_available_image(
-                image_index, -1, len(image_files), completed_indices
-            )
+            image_position = max(0, image_position - 1)
             continue
         if crop_result is Navigation.NEXT:
-            image_index = find_available_image(
-                image_index, 1, len(image_files), completed_indices
-            )
+            image_position = min(len(available_indices) - 1, image_position + 1)
             continue
 
         left, top, rotation = crop_result.left, crop_result.top, crop_result.rotation
@@ -227,17 +215,9 @@ def main():
 
         output_path = os.path.join(output_dir, os.path.basename(image_file))
         cropped_image.save(output_path)
-        completed_indices.add(image_index)
-        next_index = find_available_image(
-            image_index, 1, len(image_files), completed_indices
-        )
-        if next_index == image_index:
-            next_index = find_available_image(
-                image_index, -1, len(image_files), completed_indices
-            )
-        if next_index == image_index:
-            break
-        image_index = next_index
+        available_indices.pop(image_position)
+        if image_position == len(available_indices):
+            image_position -= 1
 
     cv2.destroyAllWindows()
 
