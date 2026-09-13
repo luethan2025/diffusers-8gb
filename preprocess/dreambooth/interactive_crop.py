@@ -33,6 +33,9 @@ class CropSelection:
 
 LEFT_ARROW_KEYS = frozenset({81, 65361, 1113937, 2424832, 63234})
 RIGHT_ARROW_KEYS = frozenset({83, 65363, 1113939, 2555904, 63235})
+ROTATE_KEYS = frozenset({ord("r"), ord("R")})
+CONFIRM_KEYS = frozenset({ord("\r")}) # enter
+RESET_KEYS = frozenset({ord("\x1b")}) # escape
 
 
 def parse_args(input_args=None):
@@ -137,15 +140,15 @@ def interactive_crop_position(image_cv, crop_size, window_name):
 
 
 def action_from_keypress(key):
-    if key in (ord("r"), ord("R")):
+    if key in ROTATE_KEYS:
         return KeyAction.ROTATE
     if key in LEFT_ARROW_KEYS:
         return KeyAction.PREVIOUS
     if key in RIGHT_ARROW_KEYS:
         return KeyAction.NEXT
-    if key == ord("\r"):
+    if key in CONFIRM_KEYS:
         return KeyAction.CONFIRM
-    if key == ord("\x1b"):
+    if key in RESET_KEYS:
         return KeyAction.RESET
     return KeyAction.NONE
 
