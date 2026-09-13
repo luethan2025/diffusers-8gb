@@ -15,11 +15,6 @@ class CropSelection:
     rotation: int
 
 
-class Navigation(Enum):
-    PREVIOUS = "previous"
-    NEXT = "next"
-
-
 class KeyAction(Enum):
     NONE = "none"
     ROTATE = "rotate"
@@ -113,9 +108,9 @@ def interactive_crop_position(image_cv, crop_size, window_name):
                     crop_size = min(current_image.shape[:2])
                     break
                 case KeyAction.PREVIOUS:
-                    return Navigation.PREVIOUS
+                    return KeyAction.PREVIOUS
                 case KeyAction.NEXT:
-                    return Navigation.NEXT
+                    return KeyAction.NEXT
                 case KeyAction.CONFIRM:
                     left = int(pos[0] / scale)
                     top = int(pos[1] / scale)
@@ -180,10 +175,10 @@ def main():
 
         image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
         crop_result = interactive_crop_position(image_cv, crop_size, window_name)
-        if crop_result is Navigation.PREVIOUS:
+        if crop_result is KeyAction.PREVIOUS:
             image_position = max(0, image_position - 1)
             continue
-        if crop_result is Navigation.NEXT:
+        if crop_result is KeyAction.NEXT:
             image_position = min(len(available_indices) - 1, image_position + 1)
             continue
 
