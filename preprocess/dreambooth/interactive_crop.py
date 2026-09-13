@@ -87,13 +87,13 @@ def interactive_crop_position(image_cv, crop_size, window_name):
                 current_image = rotate_image_cv(current_image, 90)
                 crop_size = min(current_image.shape[:2])
                 break
-            if key == 13: # enter
+            if key == 13:  # enter
                 left = int(pos[0] / scale)
                 top = int(pos[1] / scale)
                 left = max(0, min(left, width - crop_size))
                 top = max(0, min(top, height - crop_size))
                 return left, top, rotation
-            elif key == 27: # esc
+            elif key == 27:  # esc
                 pos[0] = (disp_w - disp_crop_size) // 2
                 pos[1] = (disp_h - disp_crop_size) // 2
                 left = int(pos[0] / scale)
@@ -101,6 +101,8 @@ def interactive_crop_position(image_cv, crop_size, window_name):
                 left = max(0, min(left, width - crop_size))
                 top = max(0, min(top, height - crop_size))
                 return left, top, rotation
+            elif cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+                raise SystemExit(0)
 
 
 def rotate_image_cv(image_cv, angle_degrees):
