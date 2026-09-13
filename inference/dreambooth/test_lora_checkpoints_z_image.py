@@ -139,22 +139,23 @@ def main():
         )
     ] + [args.checkpoint_dir]
 
+    transformer = ZImageTransformer2DModel.from_pretrained(
+        args.pretrained_model_name_or_path,
+        subfolder="transformer",
+        quantization_config=quantization_config,
+        torch_dtype=torch.bfloat16,
+    )
+
+    pipe = ZImagePipeline.from_pretrained(
+        args.pretrained_model_name_or_path,
+        tokenizer=None,
+        text_encoder=None,
+        transformer=transformer,
+        torch_dtype=torch.bfloat16,
+    )
+
     for lora_checkpoint_dir in lora_checkpoint_dirs:
         os.makedirs(os.path.join(args.output_dir, lora_checkpoint_dir), exist_ok=True)
-        transformer = ZImageTransformer2DModel.from_pretrained(
-            args.pretrained_model_name_or_path,
-            subfolder="transformer",
-            quantization_config=quantization_config,
-            torch_dtype=torch.bfloat16,
-        )
-
-        pipe = ZImagePipeline.from_pretrained(
-            args.pretrained_model_name_or_path,
-            tokenizer=None,
-            text_encoder=None,
-            transformer=transformer,
-            torch_dtype=torch.bfloat16,
-        )
         pipe.load_lora_weights(lora_checkpoint_dir)
 
         latents = []
@@ -171,8 +172,6 @@ def main():
                 ).images
                 latents.append(latent)
 
-        del transformer
-
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -187,8 +186,11 @@ def main():
         gc.collect()
         torch.cuda.empty_cache()
 
+        pipe.unload_lora_weights()
+
+        del latent
         del latents
-        del pipe
+        del image
 
 
 if __name__ == "__main__":
