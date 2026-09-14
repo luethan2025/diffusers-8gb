@@ -3,6 +3,7 @@ __pycache__/
 *.png
 *.jpg
 *.jpeg
+*.mp4
 *.safetensors
 *.bin
 *.pkl
