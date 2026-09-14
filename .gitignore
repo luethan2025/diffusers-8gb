@@ -4,6 +4,7 @@ __pycache__/
 *.jpg
 *.jpeg
 *.mp4
+*.m4a
 *.safetensors
 *.bin
 *.pkl
