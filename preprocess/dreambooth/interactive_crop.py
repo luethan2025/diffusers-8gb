@@ -337,7 +337,7 @@ def interactive_crop_position(
                 frame,
                 [
                     "2/2 - Position fixed square crop",
-                    "Green square is the output; drag to position",
+                    "Drag to position the square",
                     "ENTER preview | B back | R rotate | arrows navigate | ESC reset",
                 ],
             )
