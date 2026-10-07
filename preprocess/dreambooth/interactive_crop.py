@@ -428,7 +428,7 @@ def main():
 
     os.makedirs(output_dir, exist_ok=True)
 
-    window_name = "Interactive image crop"
+    window_name = "Interactive Image Crop"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, 1200, 1200)
 
