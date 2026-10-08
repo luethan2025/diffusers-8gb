@@ -13,5 +13,6 @@ scripts/*
 !scripts/dreambooth/
 scripts/dreambooth/*
 !scripts/dreambooth/train_dreambooth_lora_z_image_dog.sh
+!scripts/dreambooth/train_dreambooth_lora_sdxl_dog.sh
 *.csv
 logs/

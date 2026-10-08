@@ -15,7 +15,6 @@
 # limitations under the License.
 
 import argparse
-import gc
 import itertools
 import json
 import logging
@@ -38,7 +37,7 @@ from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration
 from huggingface_hub import create_repo, hf_hub_download, upload_folder
 from huggingface_hub.utils import insecure_hashlib
 from packaging import version
-from peft import LoraConfig, set_peft_model_state_dict
+from peft import LoraConfig, prepare_model_for_kbit_training, set_peft_model_state_dict
 from peft.utils import get_peft_model_state_dict
 from PIL import Image
 from PIL.ImageOps import exif_transpose
@@ -52,6 +51,7 @@ from transformers import AutoTokenizer, PretrainedConfig
 import diffusers
 from diffusers import (
     AutoencoderKL,
+    BitsAndBytesConfig,
     DDPMScheduler,
     DPMSolverMultistepScheduler,
     EDMEulerScheduler,
@@ -61,7 +61,16 @@ from diffusers import (
 )
 from diffusers.loaders import StableDiffusionLoraLoaderMixin
 from diffusers.optimization import get_scheduler
-from diffusers.training_utils import _set_state_dict_into_text_encoder, cast_training_params, compute_snr
+from diffusers.training_utils import (
+    _set_state_dict_into_text_encoder,
+    cast_training_params,
+    compute_snr,
+    find_nearest_bucket,
+    free_memory,
+    generate_aspect_ratio_buckets,
+    offload_models,
+    parse_buckets_string,
+)
 from diffusers.utils import (
     check_min_version,
     convert_all_state_dict_to_peft,
@@ -83,6 +92,14 @@ if is_wandb_available():
 check_min_version("0.40.0.dev0")
 
 logger = get_logger(__name__)
+
+
+def module_filter_fn(module: torch.nn.Module, fqn: str):
+    if fqn.endswith("conv_out"):
+        return False
+    if isinstance(module, torch.nn.Linear):
+        return module.in_features % 16 == 0 and module.out_features % 16 == 0
+    return False
 
 
 def determine_scheduler_type(pretrained_model_name_or_path, revision):
@@ -346,8 +363,14 @@ def parse_args(input_args=None):
         "--instance_prompt",
         type=str,
         default=None,
-        required=True,
+        required=False,
         help="The prompt with identifier specifying the instance, e.g. 'photo of a TOK dog', 'in the style of TOK'",
+    )
+    parser.add_argument(
+        "--num_samples",
+        type=int,
+        default=None,
+        help="Optional maximum number of training images to randomly select before applying --repeats.",
     )
     parser.add_argument(
         "--class_prompt",
@@ -417,6 +440,23 @@ def parse_args(input_args=None):
         help=(
             "The resolution for input images, all the images in the train/validation dataset will be resized to this"
             " resolution"
+        ),
+    )
+    parser.add_argument(
+        "--aspect_ratio_buckets",
+        type=str,
+        default=None,
+        help=(
+            "Explicit aspect-ratio buckets as 'height,width;height,width;...'. Requires "
+            "--use_aspect_ratio_buckets. Images are resized to cover and cropped to their assigned bucket."
+        ),
+    )
+    parser.add_argument(
+        "--use_aspect_ratio_buckets",
+        action="store_true",
+        help=(
+            "Enable aspect-ratio bucketing. Without explicit buckets, buckets are generated from --resolution "
+            "and capped to each image's resolution to avoid unnecessary upscaling."
         ),
     )
     parser.add_argument(
@@ -621,6 +661,32 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
+        "--cache_latents",
+        action="store_true",
+        help="Precompute VAE posterior statistics and keep them on CPU instead of encoding images during training.",
+    )
+    parser.add_argument(
+        "--offload",
+        action="store_true",
+        help="Offload the VAE and frozen text encoders to CPU between their forward passes.",
+    )
+    parser.add_argument(
+        "--bnb_quantization_config_path",
+        type=str,
+        default=None,
+        help="Path to a JSON bitsandbytes quantization config used to load the SDXL U-Net in low precision.",
+    )
+    parser.add_argument(
+        "--do_fp8_training",
+        action="store_true",
+        help="Use torchao FP8 training for eligible SDXL U-Net linear layers.",
+    )
+    parser.add_argument(
+        "--upcast_before_saving",
+        action="store_true",
+        help="Save LoRA weights in float32 instead of the training weight dtype.",
+    )
+    parser.add_argument(
         "--report_to",
         type=str,
         default="tensorboard",
@@ -693,6 +759,14 @@ def parse_args(input_args=None):
 
     if args.dataset_name is not None and args.instance_data_dir is not None:
         raise ValueError("Specify only one of `--dataset_name` or `--instance_data_dir`")
+    if args.aspect_ratio_buckets is not None and not args.use_aspect_ratio_buckets:
+        raise ValueError("--aspect_ratio_buckets requires --use_aspect_ratio_buckets to be set.")
+    if args.num_samples is not None and args.num_samples <= 0:
+        raise ValueError("--num_samples must be greater than zero.")
+    if args.do_fp8_training and args.bnb_quantization_config_path is not None:
+        raise ValueError("Both `--do_fp8_training` and `--bnb_quantization_config_path` cannot be passed.")
+    if args.offload and args.train_text_encoder:
+        raise ValueError("`--offload` cannot be used with `--train_text_encoder`.")
 
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
@@ -729,9 +803,15 @@ class DreamBoothDataset(Dataset):
         size=1024,
         repeats=1,
         center_crop=False,
+        buckets=None,
+        use_aspect_ratio_buckets=False,
     ):
         self.size = size
+        self.resolution = size
         self.center_crop = center_crop
+        self._explicit_buckets = buckets
+        self.use_aspect_ratio_buckets = use_aspect_ratio_buckets
+        self.bucket_divisibility = 16
 
         self.instance_prompt = instance_prompt
         self.custom_instance_prompts = None
@@ -751,11 +831,18 @@ class DreamBoothDataset(Dataset):
             # Downloading and loading a dataset from the hub.
             # See more about loading custom images at
             # https://huggingface.co/docs/datasets/v2.0.0/en/dataset_script
-            dataset = load_dataset(
-                args.dataset_name,
-                args.dataset_config_name,
-                cache_dir=args.cache_dir,
-            )
+            if args.instance_prompt is not None:
+                dataset = load_dataset(
+                    args.dataset_name,
+                    args.dataset_config_name,
+                    cache_dir=args.cache_dir,
+                )
+            else:
+                dataset = load_dataset(
+                    "imagefolder",
+                    data_dir=args.dataset_name,
+                    cache_dir=args.cache_dir,
+                )
             # Preprocessing the datasets.
             column_names = dataset["train"].column_names
 
@@ -777,67 +864,70 @@ class DreamBoothDataset(Dataset):
                     "contains captions/prompts for the images, make sure to specify the "
                     "column as --caption_column"
                 )
-                self.custom_instance_prompts = None
+                custom_instance_prompts = None
             else:
                 if args.caption_column not in column_names:
                     raise ValueError(
                         f"`--caption_column` value '{args.caption_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
                     )
                 custom_instance_prompts = dataset["train"][args.caption_column]
-                # create final list of captions according to --repeats
-                self.custom_instance_prompts = []
-                for caption in custom_instance_prompts:
-                    self.custom_instance_prompts.extend(itertools.repeat(caption, repeats))
         else:
             self.instance_data_root = Path(instance_data_root)
             if not self.instance_data_root.exists():
                 raise ValueError("Instance images root doesn't exists.")
 
             instance_images = [Image.open(path) for path in list(Path(instance_data_root).iterdir())]
-            self.custom_instance_prompts = None
+            custom_instance_prompts = None
+
+        if args.num_samples is not None:
+            num_samples = min(args.num_samples, len(instance_images))
+            sample_indices = random.sample(range(len(instance_images)), num_samples)
+            instance_images = [instance_images[index] for index in sample_indices]
+            if custom_instance_prompts is not None:
+                custom_instance_prompts = [custom_instance_prompts[index] for index in sample_indices]
+
+        if args.instance_prompt is None and custom_instance_prompts is None:
+            raise ValueError("Specify `--instance_prompt` or provide a dataset `--caption_column`.")
+
+        self.custom_instance_prompts = None
+        if custom_instance_prompts is not None:
+            self.custom_instance_prompts = []
+            for caption in custom_instance_prompts:
+                self.custom_instance_prompts.extend(itertools.repeat(caption, repeats))
 
         self.instance_images = []
         for img in instance_images:
             self.instance_images.extend(itertools.repeat(img, repeats))
 
-        # image processing to prepare for using SD-XL micro-conditioning
+        # Image processing to prepare for SDXL micro-conditioning.
         self.original_sizes = []
         self.crop_top_lefts = []
         self.pixel_values = []
+        self.buckets = []
+        bucket_to_idx = {}
 
         interpolation = getattr(transforms.InterpolationMode, args.image_interpolation_mode.upper(), None)
         if interpolation is None:
             raise ValueError(f"Unsupported interpolation mode {interpolation=}.")
-        train_resize = transforms.Resize(size, interpolation=interpolation)
-
-        train_crop = transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size)
-        train_flip = transforms.RandomHorizontalFlip(p=1.0)
-        train_transforms = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )
-        for image in self.instance_images:
+        self.interpolation = interpolation
+        for source_image in self.instance_images:
+            image = source_image
             image = exif_transpose(image)
             if not image.mode == "RGB":
                 image = image.convert("RGB")
-            self.original_sizes.append((image.height, image.width))
-            image = train_resize(image)
+            original_size = (image.height, image.width)
+            target_size = self._bucket_for_image(*original_size)
+            if target_size not in bucket_to_idx:
+                bucket_to_idx[target_size] = len(self.buckets)
+                self.buckets.append(target_size)
+            bucket_idx = bucket_to_idx[target_size]
+
+            image, crop_top_left = self.train_transform(image, target_size, center_crop=center_crop)
             if args.random_flip and random.random() < 0.5:
-                # flip
-                image = train_flip(image)
-            if args.center_crop:
-                y1 = max(0, int(round((image.height - args.resolution) / 2.0)))
-                x1 = max(0, int(round((image.width - args.resolution) / 2.0)))
-                image = train_crop(image)
-            else:
-                y1, x1, h, w = train_crop.get_params(image, (args.resolution, args.resolution))
-                image = crop(image, y1, x1, h, w)
-            crop_top_left = (y1, x1)
+                image = transforms.functional.hflip(image)
             self.crop_top_lefts.append(crop_top_left)
-            image = train_transforms(image)
-            self.pixel_values.append(image)
+            self.original_sizes.append(original_size)
+            self.pixel_values.append((image, bucket_idx))
 
         self.num_instance_images = len(self.instance_images)
         self._length = self.num_instance_images
@@ -854,24 +944,43 @@ class DreamBoothDataset(Dataset):
         else:
             self.class_data_root = None
 
-        self.image_transforms = transforms.Compose(
-            [
-                transforms.Resize(size, interpolation=interpolation),
-                transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )
-
     def __len__(self):
         return self._length
 
+    def _bucket_for_image(self, height, width):
+        if self._explicit_buckets is not None:
+            return self._explicit_buckets[find_nearest_bucket(height, width, self._explicit_buckets)]
+        if self.use_aspect_ratio_buckets:
+            resolution = min(self.resolution, round((height * width) ** 0.5))
+            buckets = generate_aspect_ratio_buckets(resolution, divisibility=self.bucket_divisibility)
+            return buckets[find_nearest_bucket(height, width, buckets)]
+        return (self.resolution, self.resolution)
+
+    def train_transform(self, image, size, center_crop=False):
+        target_height, target_width = size
+        scale = max(target_height / image.height, target_width / image.width)
+        resized_height, resized_width = round(image.height * scale), round(image.width * scale)
+        image = transforms.functional.resize(
+            image, [resized_height, resized_width], interpolation=self.interpolation
+        )
+        if center_crop:
+            y = max(0, int(round((image.height - target_height) / 2.0)))
+            x = max(0, int(round((image.width - target_width) / 2.0)))
+            image = transforms.functional.center_crop(image, size)
+        else:
+            y, x, height, width = transforms.RandomCrop.get_params(image, output_size=size)
+            image = crop(image, y, x, height, width)
+        return transforms.functional.normalize(transforms.functional.to_tensor(image), [0.5], [0.5]), (y, x)
+
     def __getitem__(self, index):
         example = {}
-        instance_image = self.pixel_values[index % self.num_instance_images]
+        example["index"] = index
+        instance_image, bucket_idx = self.pixel_values[index % self.num_instance_images]
+        bucket_size = self.buckets[bucket_idx]
         original_size = self.original_sizes[index % self.num_instance_images]
         crop_top_left = self.crop_top_lefts[index % self.num_instance_images]
         example["instance_images"] = instance_image
+        example["bucket_size"] = bucket_size
         example["original_size"] = original_size
         example["crop_top_left"] = crop_top_left
 
@@ -891,7 +1000,11 @@ class DreamBoothDataset(Dataset):
 
             if not class_image.mode == "RGB":
                 class_image = class_image.convert("RGB")
-            example["class_images"] = self.image_transforms(class_image)
+            class_image = class_image.convert("RGB")
+            example["class_original_size"] = (class_image.height, class_image.width)
+            example["class_images"], example["class_crop_top_left"] = self.train_transform(
+                class_image, bucket_size, center_crop=self.center_crop
+            )
             example["class_prompt"] = self.class_prompt
 
         return example
@@ -900,6 +1013,7 @@ class DreamBoothDataset(Dataset):
 def collate_fn(examples, with_prior_preservation=False):
     pixel_values = [example["instance_images"] for example in examples]
     prompts = [example["instance_prompt"] for example in examples]
+    indices = [example["index"] for example in examples]
     original_sizes = [example["original_size"] for example in examples]
     crop_top_lefts = [example["crop_top_left"] for example in examples]
 
@@ -908,8 +1022,11 @@ def collate_fn(examples, with_prior_preservation=False):
     if with_prior_preservation:
         pixel_values += [example["class_images"] for example in examples]
         prompts += [example["class_prompt"] for example in examples]
-        original_sizes += [example["original_size"] for example in examples]
-        crop_top_lefts += [example["crop_top_left"] for example in examples]
+        indices += [example["index"] for example in examples]
+        original_sizes += [
+            example["class_original_size"] for example in examples
+        ]
+        crop_top_lefts += [example["class_crop_top_left"] for example in examples]
 
     pixel_values = torch.stack(pixel_values)
     pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
@@ -917,10 +1034,46 @@ def collate_fn(examples, with_prior_preservation=False):
     batch = {
         "pixel_values": pixel_values,
         "prompts": prompts,
+        "indices": indices,
         "original_sizes": original_sizes,
         "crop_top_lefts": crop_top_lefts,
     }
     return batch
+
+
+class BucketBatchSampler(torch.utils.data.sampler.BatchSampler):
+    def __init__(self, dataset, batch_size, drop_last=False, shuffle_batches_each_epoch=True):
+        if not isinstance(batch_size, int) or batch_size <= 0:
+            raise ValueError(f"batch_size should be a positive integer value, but got batch_size={batch_size}")
+        if not isinstance(drop_last, bool):
+            raise ValueError(f"drop_last should be a boolean value, but got drop_last={drop_last}")
+
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+        self.shuffle_batches_each_epoch = shuffle_batches_each_epoch
+        bucket_indices = [[] for _ in range(len(dataset.buckets))]
+        for index, (_, bucket_idx) in enumerate(dataset.pixel_values):
+            bucket_indices[bucket_idx].append(index)
+
+        self.batches = []
+        for indices in bucket_indices:
+            random.shuffle(indices)
+            for start in range(0, len(indices), batch_size):
+                batch = indices[start : start + batch_size]
+                if len(batch) < batch_size and drop_last:
+                    continue
+                self.batches.append(batch)
+
+        if not shuffle_batches_each_epoch:
+            random.shuffle(self.batches)
+
+    def __iter__(self):
+        if self.shuffle_batches_each_epoch:
+            random.shuffle(self.batches)
+        yield from self.batches
+
+    def __len__(self):
+        return len(self.batches)
 
 
 class PromptDataset(Dataset):
@@ -953,7 +1106,7 @@ def tokenize_prompt(tokenizer, prompt):
 
 
 # Adapted from pipelines.StableDiffusionXLPipeline.encode_prompt
-def encode_prompt(text_encoders, tokenizers, prompt, text_input_ids_list=None):
+def encode_prompt(text_encoders, tokenizers, prompt, text_input_ids_list=None, offload=False, device=None):
     prompt_embeds_list = []
 
     for i, text_encoder in enumerate(text_encoders):
@@ -964,9 +1117,10 @@ def encode_prompt(text_encoders, tokenizers, prompt, text_input_ids_list=None):
             assert text_input_ids_list is not None
             text_input_ids = text_input_ids_list[i]
 
-        prompt_embeds = text_encoder(
-            text_input_ids.to(text_encoder.device), output_hidden_states=True, return_dict=False
-        )
+        with offload_models(text_encoder, device=device, offload=offload):
+            prompt_embeds = text_encoder(
+                text_input_ids.to(next(text_encoder.parameters()).device), output_hidden_states=True, return_dict=False
+            )
 
         # We are only ALWAYS interested in the pooled output of the final text encoder
         pooled_prompt_embeds = prompt_embeds[0]
@@ -995,6 +1149,10 @@ def main(args):
         raise ValueError(
             "Mixed precision training with bfloat16 is not supported on MPS. Please use fp16 (recommended) or fp32 instead."
         )
+    if (args.do_fp8_training or args.bnb_quantization_config_path is not None) and not torch.cuda.is_available():
+        raise ValueError("FP8 and bitsandbytes U-Net quantization require a CUDA device.")
+    if args.do_fp8_training:
+        from torchao.float8 import Float8LinearConfig, convert_to_float8_training
 
     logging_dir = Path(args.output_dir, args.logging_dir)
 
@@ -1127,6 +1285,12 @@ def main(args):
     else:
         noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
 
+    weight_dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        weight_dtype = torch.float16
+    elif accelerator.mixed_precision == "bf16":
+        weight_dtype = torch.bfloat16
+
     text_encoder_one = text_encoder_cls_one.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, variant=args.variant
     )
@@ -1150,9 +1314,25 @@ def main(args):
     if hasattr(vae.config, "latents_std") and vae.config.latents_std is not None:
         latents_std = torch.tensor(vae.config.latents_std).view(1, 4, 1, 1)
 
+    quantization_config = None
+    if args.bnb_quantization_config_path is not None:
+        with open(args.bnb_quantization_config_path, "r") as config_file:
+            config_kwargs = json.load(config_file)
+        if config_kwargs.get("load_in_4bit"):
+            config_kwargs["bnb_4bit_compute_dtype"] = weight_dtype
+        quantization_config = BitsAndBytesConfig(**config_kwargs)
+
     unet = UNet2DConditionModel.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant
+        args.pretrained_model_name_or_path,
+        subfolder="unet",
+        revision=args.revision,
+        variant=args.variant,
+        quantization_config=quantization_config,
+        torch_dtype=weight_dtype,
+        low_cpu_mem_usage=True,
     )
+    if quantization_config is not None:
+        unet = prepare_model_for_kbit_training(unet, use_gradient_checkpointing=False)
 
     # We only train the additional adapter LoRA layers
     vae.requires_grad_(False)
@@ -1160,28 +1340,31 @@ def main(args):
     text_encoder_two.requires_grad_(False)
     unet.requires_grad_(False)
 
-    # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora unet) to half-precision
-    # as these weights are only used for inference, keeping weights in full precision is not required.
-    weight_dtype = torch.float32
-    if accelerator.mixed_precision == "fp16":
-        weight_dtype = torch.float16
-    elif accelerator.mixed_precision == "bf16":
-        weight_dtype = torch.bfloat16
-
     if torch.backends.mps.is_available() and weight_dtype == torch.bfloat16:
         # due to pytorch#99272, MPS does not yet support bfloat16.
         raise ValueError(
             "Mixed precision training with bfloat16 is not supported on MPS. Please use fp16 (recommended) or fp32 instead."
         )
 
-    # Move unet, vae and text_encoder to device and cast to weight_dtype
-    unet.to(accelerator.device, dtype=weight_dtype)
+    # Keep the SDXL VAE in float32 for numerical stability.
+    if quantization_config is None:
+        unet.to(accelerator.device, dtype=weight_dtype)
+    else:
+        unet.to(accelerator.device)
 
-    # The VAE is always in float32 to avoid NaN losses.
-    vae.to(accelerator.device, dtype=torch.float32)
+    vae.to(torch.float32)
+    text_encoder_one.to(dtype=weight_dtype)
+    text_encoder_two.to(dtype=weight_dtype)
+    if not args.offload and not args.cache_latents:
+        vae.to(accelerator.device)
+    if args.train_text_encoder:
+        text_encoder_one.to(accelerator.device)
+        text_encoder_two.to(accelerator.device)
 
-    text_encoder_one.to(accelerator.device, dtype=weight_dtype)
-    text_encoder_two.to(accelerator.device, dtype=weight_dtype)
+    if args.do_fp8_training:
+        convert_to_float8_training(
+            unet, module_filter_fn=module_filter_fn, config=Float8LinearConfig(pad_inner_dim=True)
+        )
 
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
@@ -1449,6 +1632,19 @@ def main(args):
             safeguard_warmup=args.prodigy_safeguard_warmup,
         )
 
+    # Resolve bucketing before preprocessing so every image and class image in a batch has the same shape.
+    if args.aspect_ratio_buckets is not None:
+        buckets = parse_buckets_string(args.aspect_ratio_buckets)
+        use_aspect_ratio_buckets = False
+        logger.info(f"Using explicit aspect ratio buckets: {buckets}")
+    elif args.use_aspect_ratio_buckets:
+        buckets = None
+        use_aspect_ratio_buckets = True
+        logger.info("No explicit aspect ratio buckets provided; computing them from --resolution.")
+    else:
+        buckets = [(args.resolution, args.resolution)]
+        use_aspect_ratio_buckets = False
+
     # Dataset and DataLoaders creation:
     train_dataset = DreamBoothDataset(
         instance_data_root=args.instance_data_dir,
@@ -1459,12 +1655,20 @@ def main(args):
         size=args.resolution,
         repeats=args.repeats,
         center_crop=args.center_crop,
+        buckets=buckets,
+        use_aspect_ratio_buckets=use_aspect_ratio_buckets,
     )
 
-    train_dataloader = torch.utils.data.DataLoader(
+    has_step_indexed_caches = args.cache_latents or train_dataset.custom_instance_prompts is not None
+    batch_sampler = BucketBatchSampler(
         train_dataset,
         batch_size=args.train_batch_size,
-        shuffle=True,
+        drop_last=True,
+        shuffle_batches_each_epoch=not has_step_indexed_caches,
+    )
+    train_dataloader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_sampler=batch_sampler,
         collate_fn=lambda examples: collate_fn(examples, args.with_prior_preservation),
         num_workers=args.dataloader_num_workers,
     )
@@ -1474,9 +1678,8 @@ def main(args):
     # pooled text embeddings
     # time ids
 
-    def compute_time_ids(original_size, crops_coords_top_left):
+    def compute_time_ids(original_size, crops_coords_top_left, target_size):
         # Adapted from pipeline.StableDiffusionXLPipeline._get_add_time_ids
-        target_size = (args.resolution, args.resolution)
         add_time_ids = list(original_size + crops_coords_top_left + target_size)
         add_time_ids = torch.tensor([add_time_ids])
         add_time_ids = add_time_ids.to(accelerator.device, dtype=weight_dtype)
@@ -1488,7 +1691,13 @@ def main(args):
 
         def compute_text_embeddings(prompt, text_encoders, tokenizers):
             with torch.no_grad():
-                prompt_embeds, pooled_prompt_embeds = encode_prompt(text_encoders, tokenizers, prompt)
+                prompt_embeds, pooled_prompt_embeds = encode_prompt(
+                    text_encoders,
+                    tokenizers,
+                    prompt,
+                    offload=args.offload,
+                    device=accelerator.device,
+                )
                 prompt_embeds = prompt_embeds.to(accelerator.device)
                 pooled_prompt_embeds = pooled_prompt_embeds.to(accelerator.device)
             return prompt_embeds, pooled_prompt_embeds
@@ -1500,6 +1709,9 @@ def main(args):
         instance_prompt_hidden_states, instance_pooled_prompt_embeds = compute_text_embeddings(
             args.instance_prompt, text_encoders, tokenizers
         )
+        if args.offload:
+            instance_prompt_hidden_states = instance_prompt_hidden_states.cpu()
+            instance_pooled_prompt_embeds = instance_pooled_prompt_embeds.cpu()
 
     # Handle class prompt for prior-preservation.
     if args.with_prior_preservation:
@@ -1507,14 +1719,11 @@ def main(args):
             class_prompt_hidden_states, class_pooled_prompt_embeds = compute_text_embeddings(
                 args.class_prompt, text_encoders, tokenizers
             )
+            if args.offload:
+                class_prompt_hidden_states = class_prompt_hidden_states.cpu()
+                class_pooled_prompt_embeds = class_pooled_prompt_embeds.cpu()
 
     # Clear the memory here
-    if not args.train_text_encoder and not train_dataset.custom_instance_prompts:
-        del tokenizers, text_encoders
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
     # If custom instance prompts are NOT provided (i.e. the instance prompt is used for all images),
     # pack the statically computed variables appropriately here. This is so that we don't
     # have to pass them to the dataloader.
@@ -1536,6 +1745,90 @@ def main(args):
                 class_tokens_two = tokenize_prompt(tokenizer_two, args.class_prompt)
                 tokens_one = torch.cat([tokens_one, class_tokens_one], dim=0)
                 tokens_two = torch.cat([tokens_two, class_tokens_two], dim=0)
+
+    precompute_prompt_embeddings = not args.train_text_encoder and train_dataset.custom_instance_prompts is not None
+    if args.cache_latents:
+        instance_latents_cache = [None] * train_dataset.num_instance_images
+        class_latents_cache = (
+            [None] * train_dataset.num_instance_images if args.with_prior_preservation else None
+        )
+    if precompute_prompt_embeddings:
+        prompt_embeds_cache = [None] * train_dataset.num_instance_images
+        pooled_prompt_embeds_cache = [None] * train_dataset.num_instance_images
+
+    if args.cache_latents or precompute_prompt_embeddings:
+        cache_batch_sampler = BucketBatchSampler(
+            train_dataset, batch_size=args.train_batch_size, drop_last=False, shuffle_batches_each_epoch=False
+        )
+        cache_dataloader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_sampler=cache_batch_sampler,
+            collate_fn=lambda examples: collate_fn(examples, args.with_prior_preservation),
+            num_workers=args.dataloader_num_workers,
+        )
+        for batch in tqdm(cache_dataloader, desc="Caching latents"):
+            indices = batch["indices"]
+            batch_size = len(indices) // (2 if args.with_prior_preservation else 1)
+
+            if args.cache_latents:
+                with torch.no_grad(), offload_models(
+                    vae, device=accelerator.device, offload=args.offload or args.cache_latents
+                ):
+                    pixel_values = batch["pixel_values"].to(
+                        accelerator.device, non_blocking=True, dtype=vae.dtype
+                    )
+                    latent_dist = vae.encode(pixel_values).latent_dist
+
+                instance_means, instance_stds = latent_dist.mean[:batch_size], latent_dist.std[:batch_size]
+                for i, index in enumerate(indices[:batch_size]):
+                    instance_latents_cache[index] = (
+                        instance_means[i : i + 1].detach().cpu(),
+                        instance_stds[i : i + 1].detach().cpu(),
+                    )
+                if args.with_prior_preservation:
+                    class_means, class_stds = latent_dist.mean[batch_size:], latent_dist.std[batch_size:]
+                    for i, index in enumerate(indices[:batch_size]):
+                        class_latents_cache[index] = (
+                            class_means[i : i + 1].detach().cpu(),
+                            class_stds[i : i + 1].detach().cpu(),
+                        )
+                del pixel_values, latent_dist
+
+            if precompute_prompt_embeddings:
+                with torch.no_grad():
+                    prompt_embeds_batch, pooled_prompt_embeds_batch = compute_text_embeddings(
+                        batch["prompts"][:batch_size], text_encoders, tokenizers
+                    )
+                for i, index in enumerate(indices[:batch_size]):
+                    prompt_embeds_cache[index] = prompt_embeds_batch[i : i + 1].detach().cpu()
+                    pooled_prompt_embeds_cache[index] = pooled_prompt_embeds_batch[i : i + 1].detach().cpu()
+                del prompt_embeds_batch, pooled_prompt_embeds_batch
+
+        if args.cache_latents:
+            if any(latents is None for latents in instance_latents_cache):
+                raise RuntimeError("Latent cache has unfilled instance entries.")
+            if args.with_prior_preservation and any(latents is None for latents in class_latents_cache):
+                raise RuntimeError("Latent cache has unfilled class entries.")
+        if precompute_prompt_embeddings and any(embeds is None for embeds in prompt_embeds_cache):
+            raise RuntimeError("Prompt embedding cache has unfilled entries.")
+        if precompute_prompt_embeddings and any(embeds is None for embeds in pooled_prompt_embeds_cache):
+            raise RuntimeError("Pooled prompt embedding cache has unfilled entries.")
+
+    if args.cache_latents or args.offload:
+        vae.to("cpu")
+        free_memory()
+    if not args.train_text_encoder:
+        text_encoder_one.to("cpu")
+        text_encoder_two.to("cpu")
+        del text_encoder_one, text_encoder_two, tokenizer_one, tokenizer_two, text_encoders, tokenizers
+        free_memory()
+
+    def sample_cached_latents(latent_cache, indices):
+        if any(latent_cache[index] is None for index in indices):
+            raise RuntimeError("Attempted to read an unfilled latent cache entry.")
+        means = torch.cat([latent_cache[index][0] for index in indices]).to(accelerator.device)
+        stds = torch.cat([latent_cache[index][1] for index in indices]).to(accelerator.device)
+        return means + stds * torch.randn_like(means)
 
     # Scheduler and math around the number of training steps.
     # Check the PR https://github.com/huggingface/diffusers/pull/8312 for detailed explanation.
@@ -1594,6 +1887,9 @@ def main(args):
 
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
+    total_trainable_params = sum(
+        p.numel() for param_group in params_to_optimize for p in param_group["params"]
+    )
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_dataset)}")
@@ -1602,7 +1898,15 @@ def main(args):
     logger.info(f"  Instantaneous batch size per device = {args.train_batch_size}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
+    logger.info(f"  Total trainable parameters = {total_trainable_params:,}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
+
+    if quantization_config is not None:
+        logger.info("***** Quantization settings *****")
+        logger.info(f"  load_in_4bit = {quantization_config.load_in_4bit}")
+        logger.info(f"  bnb_4bit_quant_type = {quantization_config.bnb_4bit_quant_type}")
+        logger.info(f"  bnb_4bit_compute_dtype = {quantization_config.bnb_4bit_compute_dtype}")
+        logger.info(f"  bnb_4bit_use_double_quant = {quantization_config.bnb_4bit_use_double_quant}")
     global_step = 0
     first_epoch = 0
 
@@ -1668,21 +1972,50 @@ def main(args):
 
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
-                pixel_values = batch["pixel_values"].to(dtype=vae.dtype)
                 prompts = batch["prompts"]
+                indices = batch["indices"]
+                instance_batch_size = len(indices) // (2 if args.with_prior_preservation else 1)
 
                 # encode batch prompts when custom prompts are provided for each image -
                 if train_dataset.custom_instance_prompts:
                     if not args.train_text_encoder:
-                        prompt_embeds, unet_add_text_embeds = compute_text_embeddings(
-                            prompts, text_encoders, tokenizers
+                        prompt_embeds = torch.cat(
+                            [prompt_embeds_cache[index] for index in indices[:instance_batch_size]]
                         )
+                        unet_add_text_embeds = torch.cat(
+                            [pooled_prompt_embeds_cache[index] for index in indices[:instance_batch_size]]
+                        )
+                        if args.with_prior_preservation:
+                            prompt_embeds = torch.cat(
+                                [prompt_embeds, class_prompt_hidden_states.cpu().repeat(instance_batch_size, 1, 1)]
+                            )
+                            unet_add_text_embeds = torch.cat(
+                                [
+                                    unet_add_text_embeds,
+                                    class_pooled_prompt_embeds.cpu().repeat(instance_batch_size, 1),
+                                ]
+                            )
                     else:
                         tokens_one = tokenize_prompt(tokenizer_one, prompts)
                         tokens_two = tokenize_prompt(tokenizer_two, prompts)
 
                 # Convert images to latent space
-                model_input = vae.encode(pixel_values).latent_dist.sample()
+                if args.cache_latents:
+                    model_input = sample_cached_latents(
+                        instance_latents_cache, indices[:instance_batch_size]
+                    )
+                    if args.with_prior_preservation:
+                        class_model_input = sample_cached_latents(
+                            class_latents_cache, indices[:instance_batch_size]
+                        )
+                        model_input = torch.cat([model_input, class_model_input])
+                else:
+                    with offload_models(vae, device=accelerator.device, offload=args.offload):
+                        pixel_values = batch["pixel_values"].to(
+                            accelerator.device, non_blocking=True, dtype=vae.dtype
+                        )
+                        model_input = vae.encode(pixel_values).latent_dist.sample()
+                    del pixel_values
 
                 if latents_mean is None and latents_std is None:
                     model_input = model_input * vae.config.scaling_factor
@@ -1727,7 +2060,11 @@ def main(args):
                 # time ids
                 add_time_ids = torch.cat(
                     [
-                        compute_time_ids(original_size=s, crops_coords_top_left=c)
+                        compute_time_ids(
+                            original_size=s,
+                            crops_coords_top_left=c,
+                            target_size=tuple(batch["pixel_values"].shape[-2:]),
+                        )
                         for s, c in zip(batch["original_sizes"], batch["crop_top_lefts"])
                     ]
                 )
@@ -1742,9 +2079,13 @@ def main(args):
                 if not args.train_text_encoder:
                     unet_added_conditions = {
                         "time_ids": add_time_ids,
-                        "text_embeds": unet_add_text_embeds.repeat(elems_to_repeat_text_embeds, 1),
+                        "text_embeds": unet_add_text_embeds.to(accelerator.device).repeat(
+                            elems_to_repeat_text_embeds, 1
+                        ),
                     }
-                    prompt_embeds_input = prompt_embeds.repeat(elems_to_repeat_text_embeds, 1, 1)
+                    prompt_embeds_input = prompt_embeds.to(accelerator.device).repeat(
+                        elems_to_repeat_text_embeds, 1, 1
+                    )
                     model_pred = unet(
                         inp_noisy_latents if args.do_edm_style_training else noisy_model_input,
                         timesteps,
@@ -1944,23 +2285,43 @@ def main(args):
                     epoch,
                     torch_dtype=weight_dtype,
                 )
+                del pipeline
+                if args.cache_latents or args.offload:
+                    vae.to("cpu")
+                if not args.train_text_encoder:
+                    text_encoder_one.to("cpu")
+                    text_encoder_two.to("cpu")
+                    del text_encoder_one, text_encoder_two
+                free_memory()
 
     # Save the lora layers
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         unet = unwrap_model(unet)
-        unet = unet.to(torch.float32)
         unet_lora_layers = convert_state_dict_to_diffusers(get_peft_model_state_dict(unet))
+        save_dtype = torch.float32 if args.upcast_before_saving else weight_dtype
+        unet_lora_layers = {
+            key: value.to(device="cpu", dtype=save_dtype) if isinstance(value, torch.Tensor) else value
+            for key, value in unet_lora_layers.items()
+        }
 
         if args.train_text_encoder:
             text_encoder_one = unwrap_model(text_encoder_one)
             text_encoder_lora_layers = convert_state_dict_to_diffusers(
-                get_peft_model_state_dict(text_encoder_one.to(torch.float32))
+                get_peft_model_state_dict(text_encoder_one)
             )
+            text_encoder_lora_layers = {
+                key: value.to(device="cpu", dtype=save_dtype) if isinstance(value, torch.Tensor) else value
+                for key, value in text_encoder_lora_layers.items()
+            }
             text_encoder_two = unwrap_model(text_encoder_two)
             text_encoder_2_lora_layers = convert_state_dict_to_diffusers(
-                get_peft_model_state_dict(text_encoder_two.to(torch.float32))
+                get_peft_model_state_dict(text_encoder_two)
             )
+            text_encoder_2_lora_layers = {
+                key: value.to(device="cpu", dtype=save_dtype) if isinstance(value, torch.Tensor) else value
+                for key, value in text_encoder_2_lora_layers.items()
+            }
         else:
             text_encoder_lora_layers = None
             text_encoder_2_lora_layers = None
