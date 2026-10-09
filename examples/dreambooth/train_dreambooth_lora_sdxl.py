@@ -385,6 +385,18 @@ def parse_args(input_args=None):
         help="A prompt that is used during validation to verify that the model is learning.",
     )
     parser.add_argument(
+        "--skip_final_inference",
+        default=False,
+        action="store_true",
+        help="Whether to skip the final inference step with loaded lora weights upon training completion. This will run intermediate validation inference if `validation_prompt` is provided. Specify to reduce memory.",
+    )
+    parser.add_argument(
+        "--final_validation_prompt",
+        type=str,
+        default=None,
+        help="A prompt that is used during a final validation to verify that the model is learning. Ignored if `--validation_prompt` is provided.",
+    )
+    parser.add_argument(
         "--num_validation_images",
         type=int,
         default=4,
@@ -2338,40 +2350,57 @@ def main(args):
             kohya_state_dict = convert_state_dict_to_kohya(peft_state_dict)
             save_file(kohya_state_dict, f"{args.output_dir}/pytorch_lora_weights_kohya.safetensors")
 
-        # Final inference
-        # Load previous pipeline
-        vae = AutoencoderKL.from_pretrained(
-            vae_path,
-            subfolder="vae" if args.pretrained_vae_model_name_or_path is None else None,
-            revision=args.revision,
-            variant=args.variant,
-            torch_dtype=weight_dtype,
-        )
-        pipeline = StableDiffusionXLPipeline.from_pretrained(
-            args.pretrained_model_name_or_path,
-            vae=vae,
-            revision=args.revision,
-            variant=args.variant,
-            torch_dtype=weight_dtype,
-        )
-
-        # load attention processors
-        pipeline.load_lora_weights(args.output_dir)
-
-        # run inference
         images = []
-        if args.validation_prompt and args.num_validation_images > 0:
-            pipeline_args = {"prompt": args.validation_prompt, "num_inference_steps": 25}
-            images = log_validation(
-                pipeline,
-                args,
-                accelerator,
-                pipeline_args,
-                epoch,
-                is_final_validation=True,
+        run_validation = (args.validation_prompt and args.num_validation_images > 0) or (args.final_validation_prompt)
+        should_run_final_inference = not args.skip_final_inference and run_validation
+        if should_run_final_inference:
+            # Final inference
+            # Load previous pipeline
+            vae = AutoencoderKL.from_pretrained(
+                vae_path,
+                subfolder="vae" if args.pretrained_vae_model_name_or_path is None else None,
+                revision=args.revision,
+                variant=args.variant,
+                torch_dtype=weight_dtype,
+            )
+            pipeline = StableDiffusionXLPipeline.from_pretrained(
+                args.pretrained_model_name_or_path,
+                vae=vae,
+                revision=args.revision,
+                variant=args.variant,
                 torch_dtype=weight_dtype,
             )
 
+            # load attention processors
+            pipeline.load_lora_weights(args.output_dir)
+
+            # run inference
+            if args.validation_prompt and args.num_validation_images > 0:
+                pipeline_args = {"prompt": args.validation_prompt, "num_inference_steps": 25}
+                images = log_validation(
+                    pipeline,
+                    args,
+                    accelerator,
+                    pipeline_args,
+                    epoch,
+                    is_final_validation=True,
+                    torch_dtype=weight_dtype,
+                )
+            else:
+                pipeline_args = {"prompt": args.final_validation_prompt, "num_inference_steps": 25}
+                images = log_validation(
+                    pipeline,
+                    args,
+                    accelerator,
+                    pipeline_args,
+                    epoch,
+                    is_final_validation=True,
+                    torch_dtype=weight_dtype,
+                )
+            del pipeline
+            free_memory()
+
+        validation_prompt = args.validation_prompt if args.validation_prompt else args.final_validation_prompt
         if args.push_to_hub:
             save_model_card(
                 repo_id,
@@ -2380,7 +2409,7 @@ def main(args):
                 base_model=args.pretrained_model_name_or_path,
                 train_text_encoder=args.train_text_encoder,
                 instance_prompt=args.instance_prompt,
-                validation_prompt=args.validation_prompt,
+                validation_prompt=validation_prompt,
                 repo_folder=args.output_dir,
                 vae_path=args.pretrained_vae_model_name_or_path,
             )
