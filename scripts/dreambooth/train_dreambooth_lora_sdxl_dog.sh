@@ -3,7 +3,7 @@
 export MODEL_NAME="stabilityai/stable-diffusion-xl-base-1.0"
 export INSTANCE_DIR="dog"
 export OUTPUT_DIR="trained-sdxl-lora"
-export BNB_QUANTIZATION_CONFIG_PATH="configs/bnb/train_dreambooth_lora_z_image.json"
+export BNB_QUANTIZATION_CONFIG_PATH="configs/bnb/train_dreambooth_lora_sdxl.json"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 accelerate launch examples/dreambooth/train_dreambooth_lora_sdxl.py \
