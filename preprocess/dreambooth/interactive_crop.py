@@ -415,13 +415,13 @@ def main():
     args = parse_args()
 
     if args.instance_data_dir is not None:
-        output_dir = os.path.join(args.instance_data_dir, "cropped")
+        output_dir = os.path.join(args.instance_data_dir, "preprocessed")
         image_files = sorted(
             f for f in os.listdir(args.instance_data_dir)
             if f.lower().endswith(".jpg")
         )
     elif args.instance_data is not None:
-        output_dir = os.path.join(os.path.dirname(args.instance_data), "cropped")
+        output_dir = os.path.join(os.path.dirname(args.instance_data), "preprocessed")
         image_files = [args.instance_data]
     else:
         raise ValueError("Either --instance_data_dir or --instance_data must be provided.")
