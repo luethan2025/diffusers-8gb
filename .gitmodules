@@ -4,3 +4,6 @@
 [submodule "diffusers"]
 	path = diffusers
 	url = https://github.com/luethan2025/diffusers.git
+[submodule "inference/synthetic_data/InstantID"]
+	path = inference/synthetic_data/InstantID
+	url = https://github.com/instantX-research/InstantID.git
