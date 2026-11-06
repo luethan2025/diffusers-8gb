@@ -707,7 +707,7 @@ def interactive_crop_preview(image_cv, selection, output_resolution, window_name
             canvas,
             (display_left, display_top),
             (display_right, display_bottom),
-            (0, 220, 255),
+            (0, 0, 0),
             2,
         )
         cv2.putText(
