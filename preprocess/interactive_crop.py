@@ -31,6 +31,7 @@ class CropSelection:
     left: int
     top: int
     rotation: Rotation
+    bounds: tuple[int, int, int, int]
 
 
 @dataclass
@@ -48,6 +49,8 @@ CONFIRM_KEYS = frozenset({ord("\r"), 10})
 RESET_KEYS = frozenset({ord("\x1b")})
 SKIP_KEYS = frozenset({ord("s"), ord("S")})
 BACK_KEYS = frozenset({ord("b"), ord("B")})
+PREVIOUS_KEYS = frozenset({ord("a"), ord("A")})
+NEXT_KEYS = frozenset({ord("d"), ord("D")})
 SUPPORTED_IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png"})
 
 
@@ -144,7 +147,6 @@ def interactive_precrop(image_cv, window_name, initial_bounds=None):
         "focused": None,
         "width_text": "",
         "height_text": "",
-        "error": "",
         "replace_text": False,
     }
 
@@ -172,6 +174,8 @@ def interactive_precrop(image_cv, window_name, initial_bounds=None):
                     field_x <= x <= field_x + field_width
                     and width_field_y <= y <= width_field_y + field_height
                 ):
+                    if dimension_state["focused"] is not None:
+                        apply_dimensions()
                     dimension_state["focused"] = "width_text"
                     dimension_state["width_text"] = ""
                     dimension_state["replace_text"] = True
@@ -179,6 +183,8 @@ def interactive_precrop(image_cv, window_name, initial_bounds=None):
                     field_x <= x <= field_x + field_width
                     and height_field_y <= y <= height_field_y + field_height
                 ):
+                    if dimension_state["focused"] is not None:
+                        apply_dimensions()
                     dimension_state["focused"] = "height_text"
                     dimension_state["height_text"] = ""
                     dimension_state["replace_text"] = True
@@ -258,13 +264,14 @@ def interactive_precrop(image_cv, window_name, initial_bounds=None):
         def apply_dimensions():
             try:
                 box_width = int(dimension_state["width_text"])
+            except ValueError:
+                box_width = width
+            try:
                 box_height = int(dimension_state["height_text"])
             except ValueError:
-                dimension_state["error"] = "Enter whole-number dimensions."
-                return False
-            if not (1 <= box_width <= width and 1 <= box_height <= height):
-                dimension_state["error"] = "Dimensions must fit inside the image."
-                return False
+                box_height = height
+            box_width = max(1, min(box_width, width))
+            box_height = max(1, min(box_height, height))
 
             center_x = (selection[0] + selection[2]) / 2
             center_y = (selection[1] + selection[3]) / 2
@@ -272,7 +279,6 @@ def interactive_precrop(image_cv, window_name, initial_bounds=None):
             selection[1] = max(0, min(round(center_y - box_height / 2), height - box_height))
             selection[2] = selection[0] + box_width
             selection[3] = selection[1] + box_height
-            dimension_state["error"] = ""
             return True
 
         cv2.setMouseCallback(window_name, on_mouse)
@@ -356,23 +362,22 @@ def interactive_precrop(image_cv, window_name, initial_bounds=None):
                 1,
                 cv2.LINE_AA,
             )
-            if dimension_state["error"]:
-                cv2.putText(
-                    canvas,
-                    dimension_state["error"],
-                    (field_x, 300),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.4,
-                    (80, 120, 255),
-                    1,
-                    cv2.LINE_AA,
-                )
+            cv2.putText(
+                canvas,
+                "Arrows move | A/D previous/next",
+                (field_x, canvas.shape[0] - 48),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.38,
+                (220, 220, 220),
+                1,
+                cv2.LINE_AA,
+            )
             cv2.putText(
                 canvas,
                 "1/2 - Trim image",
-                (field_x, canvas.shape[0] - 25),
+                (field_x, canvas.shape[0] - 22),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.48,
+                0.43,
                 (220, 220, 220),
                 1,
                 cv2.LINE_AA,
@@ -607,20 +612,20 @@ def interactive_crop_position(
             )
             cv2.putText(
                 canvas,
-                "2/2 - Position crop",
+                "Arrows move crop | A/D previous/next",
                 (field_x, canvas_height - 55),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.46,
+                0.38,
                 (220, 220, 220),
                 1,
                 cv2.LINE_AA,
             )
             cv2.putText(
                 canvas,
-                "ENTER preview | B back | R rotate",
+                "ENTER preview | B back | R rotate | ESC reset",
                 (field_x, canvas_height - 27),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.36,
+                0.31,
                 (220, 220, 220),
                 1,
                 cv2.LINE_AA,
@@ -653,7 +658,7 @@ def interactive_crop_position(
                     case KeyAction.NEXT:
                         return KeyAction.NEXT
                     case KeyAction.CONFIRM:
-                        return CropSelection(crop_left, crop_top, rotation)
+                        return CropSelection(crop_left, crop_top, rotation, bounds)
                     case KeyAction.BACK:
                         return KeyAction.BACK
                     case KeyAction.RESET:
@@ -665,30 +670,130 @@ def interactive_crop_position(
             clamp()
 
 
-def interactive_crop_preview(image, window_name):
-    preview = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    max_display = 1200
-    height, width = preview.shape[:2]
-    scale = min(1.0, max_display / max(width, height))
-    if scale < 1.0:
-        preview = cv2.resize(
-            preview,
-            (max(1, int(width * scale)), max(1, int(height * scale))),
-        )
-    preview = draw_instructions(
-        preview,
-        ["Final preview", "ENTER save | B adjust crop | arrows navigate"],
+def interactive_crop_preview(image_cv, selection, output_resolution, window_name):
+    source_height, source_width = image_cv.shape[:2]
+    crop_size = min(
+        selection.bounds[2] - selection.bounds[0],
+        selection.bounds[3] - selection.bounds[1],
     )
+    max_display = 850
+    scale = min(1.0, max_display / max(source_width, source_height))
+    display_width = max(1, int(source_width * scale))
+    display_height = max(1, int(source_height * scale))
+    panel_width = 320
+    panel_x = display_width
+    panel_field_x = panel_x + 24
+    panel_field_width = panel_width - 48
+    canvas_height = max(display_height, 560)
+
     while True:
-        cv2.imshow(window_name, preview)
-        action = action_from_keypress(cv2.waitKeyEx(20))
-        if action in (KeyAction.CONFIRM, KeyAction.BACK, KeyAction.PREVIOUS, KeyAction.NEXT):
-            return action
-        if (
-            action is KeyAction.NONE
-            and cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1
-        ):
-            raise SystemExit(0)
+        display_base = cv2.resize(image_cv, (display_width, display_height))
+        canvas = np.zeros(
+            (canvas_height, display_width + panel_width, 3),
+            dtype=np.uint8,
+        )
+        canvas[:display_height, :display_width] = display_base
+        canvas[:, panel_x:] = (38, 38, 38)
+
+        crop_left, crop_top = selection.left, selection.top
+        crop_right, crop_bottom = crop_left + crop_size, crop_top + crop_size
+        display_left, display_top = int(crop_left * scale), int(crop_top * scale)
+        display_right = max(display_left + 1, int(crop_right * scale))
+        display_bottom = max(display_top + 1, int(crop_bottom * scale))
+        canvas[display_top:display_bottom, display_left:display_right] = display_base[
+            display_top:display_bottom, display_left:display_right
+        ]
+        cv2.rectangle(
+            canvas,
+            (display_left, display_top),
+            (display_right, display_bottom),
+            (0, 220, 255),
+            2,
+        )
+        cv2.putText(
+            canvas,
+            "Final crop preview",
+            (panel_field_x, 42),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.53,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+        crop_preview = image_cv[crop_top:crop_bottom, crop_left:crop_right]
+        preview_scale = min(
+            (panel_field_width - 4) / crop_size,
+            280 / crop_size,
+        )
+        preview_size = max(1, int(crop_size * preview_scale))
+        crop_preview = cv2.resize(crop_preview, (preview_size, preview_size))
+        preview_y = 78
+        canvas[
+            preview_y:preview_y + preview_size,
+            panel_field_x:panel_field_x + preview_size,
+        ] = crop_preview
+        cv2.putText(
+            canvas,
+            f"Saved output: {output_resolution} x {output_resolution}",
+            (panel_field_x, 390),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (210, 210, 210),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            canvas,
+            "Arrows move crop | ENTER save",
+            (panel_field_x, canvas_height - 55),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.39,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            canvas,
+            "B back | A/D previous/next image",
+            (panel_field_x, canvas_height - 27),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.34,
+            (220, 220, 220),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.imshow(window_name, canvas)
+
+        key = cv2.waitKeyEx(20)
+        move_step = max(1, int(round(10 / scale)))
+        bounds_left, bounds_top, bounds_right, bounds_bottom = selection.bounds
+        if key in LEFT_ARROW_KEYS:
+            selection.left -= move_step
+        elif key in RIGHT_ARROW_KEYS:
+            selection.left += move_step
+        elif key in UP_ARROW_KEYS:
+            selection.top -= move_step
+        elif key in DOWN_ARROW_KEYS:
+            selection.top += move_step
+        else:
+            action = action_from_keypress(key)
+            if action is KeyAction.CONFIRM:
+                return selection
+            if action in (KeyAction.BACK, KeyAction.PREVIOUS, KeyAction.NEXT):
+                return action
+            if action is KeyAction.NONE and cv2.getWindowProperty(
+                window_name, cv2.WND_PROP_VISIBLE
+            ) < 1:
+                raise SystemExit(0)
+        selection.left = max(
+            bounds_left,
+            min(selection.left, bounds_right - crop_size),
+        )
+        selection.top = max(
+            bounds_top,
+            min(selection.top, bounds_bottom - crop_size),
+        )
 
 
 def action_from_keypress(key):
@@ -697,6 +802,10 @@ def action_from_keypress(key):
     if key in LEFT_ARROW_KEYS:
         return KeyAction.PREVIOUS
     if key in RIGHT_ARROW_KEYS:
+        return KeyAction.NEXT
+    if key in PREVIOUS_KEYS:
+        return KeyAction.PREVIOUS
+    if key in NEXT_KEYS:
         return KeyAction.NEXT
     if key in CONFIRM_KEYS:
         return KeyAction.CONFIRM
@@ -782,25 +891,12 @@ def main():
                     break
 
                 rotated_image_cv = rotate_image(working_image_cv, crop_result.rotation)
-                crop_size = min(
-                    precrop_bounds[2] - precrop_bounds[0],
-                    precrop_bounds[3] - precrop_bounds[1],
+                preview_action = interactive_crop_preview(
+                    rotated_image_cv,
+                    crop_result,
+                    args.resolution,
+                    window_name,
                 )
-                cropped_image = Image.fromarray(
-                    cv2.cvtColor(rotated_image_cv, cv2.COLOR_BGR2RGB)
-                ).crop(
-                    (
-                        crop_result.left,
-                        crop_result.top,
-                        crop_result.left + crop_size,
-                        crop_result.top + crop_size,
-                    )
-                )
-                cropped_image = cropped_image.resize(
-                    (args.resolution, args.resolution),
-                    Image.Resampling.LANCZOS,
-                )
-                preview_action = interactive_crop_preview(cropped_image, window_name)
                 if preview_action is KeyAction.BACK:
                     initial_crop_position = (crop_result.left, crop_result.top)
                     initial_crop_rotation = crop_result.rotation
@@ -809,6 +905,24 @@ def main():
                     navigate_action = preview_action
                     break
 
+                crop_size = min(
+                    preview_action.bounds[2] - preview_action.bounds[0],
+                    preview_action.bounds[3] - preview_action.bounds[1],
+                )
+                cropped_image = Image.fromarray(
+                    cv2.cvtColor(rotated_image_cv, cv2.COLOR_BGR2RGB)
+                ).crop(
+                    (
+                        preview_action.left,
+                        preview_action.top,
+                        preview_action.left + crop_size,
+                        preview_action.top + crop_size,
+                    )
+                )
+                cropped_image = cropped_image.resize(
+                    (args.resolution, args.resolution),
+                    Image.Resampling.LANCZOS,
+                )
                 output_path = os.path.join(output_dir, os.path.basename(image_file))
                 cropped_image.save(output_path)
                 saved = True
