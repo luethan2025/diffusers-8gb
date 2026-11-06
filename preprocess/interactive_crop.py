@@ -40,12 +40,15 @@ class PrecropSelection:
 
 
 LEFT_ARROW_KEYS = frozenset({81, 65361, 1113937, 2424832, 63234})
+UP_ARROW_KEYS = frozenset({82, 65362, 1113938, 2490368, 63232})
 RIGHT_ARROW_KEYS = frozenset({83, 65363, 1113939, 2555904, 63235})
+DOWN_ARROW_KEYS = frozenset({84, 65364, 1113940, 2621440, 63233})
 ROTATE_KEYS = frozenset({ord("r"), ord("R")})
 CONFIRM_KEYS = frozenset({ord("\r"), 10})
 RESET_KEYS = frozenset({ord("\x1b")})
 SKIP_KEYS = frozenset({ord("s"), ord("S")})
 BACK_KEYS = frozenset({ord("b"), ord("B")})
+SUPPORTED_IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png"})
 
 
 def parse_args(input_args=None):
@@ -117,7 +120,7 @@ def draw_instructions(frame, lines):
 def interactive_precrop(image_cv, window_name, initial_bounds=None):
     current_image = image_cv.copy()
     rotation = Rotation.CLOCKWISE_0
-    max_display = 1200
+    max_display = 850
     has_custom_selection = initial_bounds is not None and initial_bounds != (
         0,
         0,
@@ -129,11 +132,29 @@ def interactive_precrop(image_cv, window_name, initial_bounds=None):
         if initial_bounds is not None
         else (0, 0, image_cv.shape[1], image_cv.shape[0])
     )
+    panel_width = 320
+    panel_x = 0
+    field_x = 0
+    field_width = 0
+    field_height = 42
+    width_field_y = 83
+    height_field_y = 158
+    square_button_y = 230
+    dimension_state = {
+        "focused": None,
+        "width_text": "",
+        "height_text": "",
+        "error": "",
+        "replace_text": False,
+    }
 
     while True:
         height, width = current_image.shape[:2]
         scale = min(1.0, max_display / max(width, height))
         disp_w, disp_h = max(1, int(width * scale)), max(1, int(height * scale))
+        panel_x = disp_w
+        field_x = panel_x + 24
+        field_width = panel_width - 48
         display_base = cv2.resize(current_image, (disp_w, disp_h))
         dragging = {"mode": None, "start": (0, 0), "orig": None, "corner": None}
 
@@ -145,6 +166,39 @@ def interactive_precrop(image_cv, window_name, initial_bounds=None):
 
         def on_mouse(event, x, y, flags, param):
             nonlocal has_custom_selection
+            if event == cv2.EVENT_LBUTTONDOWN and x >= panel_x:
+                dragging["mode"] = None
+                if (
+                    field_x <= x <= field_x + field_width
+                    and width_field_y <= y <= width_field_y + field_height
+                ):
+                    dimension_state["focused"] = "width_text"
+                    dimension_state["width_text"] = ""
+                    dimension_state["replace_text"] = True
+                elif (
+                    field_x <= x <= field_x + field_width
+                    and height_field_y <= y <= height_field_y + field_height
+                ):
+                    dimension_state["focused"] = "height_text"
+                    dimension_state["height_text"] = ""
+                    dimension_state["replace_text"] = True
+                elif (
+                    field_x <= x <= field_x + field_width
+                    and square_button_y <= y <= square_button_y + field_height
+                ):
+                    dimension_state["height_text"] = dimension_state["width_text"]
+                    dimension_state["focused"] = None
+                    dimension_state["replace_text"] = False
+                    apply_dimensions()
+                else:
+                    dimension_state["focused"] = None
+                    dimension_state["replace_text"] = False
+                    apply_dimensions()
+                return
+            if event == cv2.EVENT_LBUTTONDOWN:
+                dimension_state["focused"] = None
+                dimension_state["replace_text"] = False
+                apply_dimensions()
             image_x = max(0, min(int(x / scale), width - 1))
             image_y = max(0, min(int(y / scale), height - 1))
             if event == cv2.EVENT_LBUTTONDOWN:
@@ -201,6 +255,26 @@ def interactive_precrop(image_cv, window_name, initial_bounds=None):
             elif event == cv2.EVENT_LBUTTONUP:
                 dragging["mode"] = None
 
+        def apply_dimensions():
+            try:
+                box_width = int(dimension_state["width_text"])
+                box_height = int(dimension_state["height_text"])
+            except ValueError:
+                dimension_state["error"] = "Enter whole-number dimensions."
+                return False
+            if not (1 <= box_width <= width and 1 <= box_height <= height):
+                dimension_state["error"] = "Dimensions must fit inside the image."
+                return False
+
+            center_x = (selection[0] + selection[2]) / 2
+            center_y = (selection[1] + selection[3]) / 2
+            selection[0] = max(0, min(round(center_x - box_width / 2), width - box_width))
+            selection[1] = max(0, min(round(center_y - box_height / 2), height - box_height))
+            selection[2] = selection[0] + box_width
+            selection[3] = selection[1] + box_height
+            dimension_state["error"] = ""
+            return True
+
         cv2.setMouseCallback(window_name, on_mouse)
 
         while True:
@@ -221,11 +295,136 @@ def interactive_precrop(image_cv, window_name, initial_bounds=None):
                 [
                     "1/2 - Trim image",
                     "Drag to draw or move; drag a corner to resize",
-                    "ENTER continue | S skip | R rotate | arrows navigate | ESC reset",
+                    "Arrows move selection | click size fields to enter dimensions",
                 ],
             )
-            cv2.imshow(window_name, frame)
+            canvas = np.zeros((max(disp_h, 350), disp_w + panel_width, 3), dtype=np.uint8)
+            canvas[:disp_h, :disp_w] = frame
+            canvas[:, panel_x:] = (38, 38, 38)
+            if dimension_state["focused"] is None:
+                dimension_state["width_text"] = str(selection[2] - selection[0])
+                dimension_state["height_text"] = str(selection[3] - selection[1])
+            cv2.putText(
+                canvas,
+                "Crop box dimensions (pixels)",
+                (field_x, 48),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.53,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+            for label, key, field_y in (
+                ("Width", "width_text", width_field_y),
+                ("Height", "height_text", height_field_y),
+            ):
+                cv2.putText(
+                    canvas,
+                    label,
+                    (field_x, field_y - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (220, 220, 220),
+                    1,
+                    cv2.LINE_AA,
+                )
+                cv2.rectangle(
+                    canvas,
+                    (field_x, field_y),
+                    (field_x + field_width, field_y + field_height),
+                    (180, 180, 180)
+                    if dimension_state["focused"] == key
+                    else (100, 100, 100),
+                    2,
+                )
+                cv2.putText(
+                    canvas,
+                    dimension_state[key] or "_",
+                    (field_x + 10, field_y + 28),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.62,
+                    (255, 255, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+            cv2.rectangle(
+                canvas,
+                (field_x, square_button_y),
+                (field_x + field_width, square_button_y + field_height),
+                (90, 90, 90),
+                -1,
+            )
+            cv2.putText(
+                canvas,
+                "Make square (height = width)",
+                (field_x + 8, square_button_y + 27),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.48,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+            if dimension_state["error"]:
+                cv2.putText(
+                    canvas,
+                    dimension_state["error"],
+                    (field_x, 300),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4,
+                    (80, 120, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+            cv2.imshow(window_name, canvas)
             key = cv2.waitKeyEx(20)
+            if dimension_state["focused"] is not None:
+                field = dimension_state["focused"]
+                if key in CONFIRM_KEYS:
+                    if apply_dimensions():
+                        dimension_state["focused"] = None
+                        dimension_state["replace_text"] = False
+                    continue
+                if key in (8, 127):
+                    if dimension_state["replace_text"]:
+                        dimension_state[field] = ""
+                        dimension_state["replace_text"] = False
+                    else:
+                        dimension_state[field] = dimension_state[field][:-1]
+                    continue
+                if ord("0") <= key <= ord("9"):
+                    if dimension_state["replace_text"]:
+                        dimension_state[field] = ""
+                        dimension_state["replace_text"] = False
+                    dimension_state[field] += chr(key)
+                    continue
+                if key == 27:
+                    dimension_state["focused"] = None
+                    dimension_state["replace_text"] = False
+                    continue
+                if key < 0:
+                    continue
+                dimension_state["focused"] = None
+                dimension_state["replace_text"] = False
+            move_step = max(1, int(round(10 / scale)))
+            if key in LEFT_ARROW_KEYS:
+                dx, dy = -move_step, 0
+            elif key in RIGHT_ARROW_KEYS:
+                dx, dy = move_step, 0
+            elif key in UP_ARROW_KEYS:
+                dx, dy = 0, -move_step
+            elif key in DOWN_ARROW_KEYS:
+                dx, dy = 0, move_step
+            else:
+                dx = dy = 0
+            if dx or dy:
+                box_width = selection[2] - selection[0]
+                box_height = selection[3] - selection[1]
+                selection[0] = max(0, min(selection[0] + dx, width - box_width))
+                selection[1] = max(0, min(selection[1] + dy, height - box_height))
+                selection[2] = selection[0] + box_width
+                selection[3] = selection[1] + box_height
+                continue
+
             action = action_from_keypress(key)
             match action:
                 case KeyAction.ROTATE:
@@ -238,7 +437,8 @@ def interactive_precrop(image_cv, window_name, initial_bounds=None):
                 case KeyAction.NEXT:
                     return KeyAction.NEXT
                 case KeyAction.CONFIRM:
-                    return PrecropSelection(tuple(selection), rotation)
+                    if apply_dimensions():
+                        return PrecropSelection(tuple(selection), rotation)
                 case KeyAction.SKIP:
                     return PrecropSelection((0, 0, width, height), rotation)
                 case KeyAction.RESET:
@@ -337,37 +537,48 @@ def interactive_crop_position(
                 frame,
                 [
                     "2/2 - Position fixed square crop",
-                    "Drag to position the square",
-                    "ENTER preview | B back | R rotate | arrows navigate | ESC reset",
+                    "Drag or use arrow keys to position the square",
+                    "ENTER preview | B back | R rotate | ESC reset",
                 ],
             )
             cv2.imshow(window_name, frame)
             key = cv2.waitKeyEx(20)
-            action = action_from_keypress(key)
-            match action:
-                case KeyAction.ROTATE:
-                    bounds = rotate_bounds_clockwise(bounds, height)
-                    crop_left, crop_top, _, _ = rotate_bounds_clockwise(
-                        (crop_left, crop_top, crop_left + crop_size, crop_top + crop_size),
-                        height,
-                    )
-                    rotation = Rotation((rotation.value + 90) % 360)
-                    current_image = cv2.rotate(current_image, cv2.ROTATE_90_CLOCKWISE)
-                    break
-                case KeyAction.PREVIOUS:
-                    return KeyAction.PREVIOUS
-                case KeyAction.NEXT:
-                    return KeyAction.NEXT
-                case KeyAction.CONFIRM:
-                    return CropSelection(crop_left, crop_top, rotation)
-                case KeyAction.BACK:
-                    return KeyAction.BACK
-                case KeyAction.RESET:
-                    crop_left = bounds[0] + (bounds[2] - bounds[0] - crop_size) // 2
-                    crop_top = bounds[1] + (bounds[3] - bounds[1] - crop_size) // 2
-                case KeyAction.NONE:
-                    if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
-                        raise SystemExit(0)
+            move_step = max(1, int(round(10 / scale)))
+            if key in LEFT_ARROW_KEYS:
+                crop_left -= move_step
+            elif key in RIGHT_ARROW_KEYS:
+                crop_left += move_step
+            elif key in UP_ARROW_KEYS:
+                crop_top -= move_step
+            elif key in DOWN_ARROW_KEYS:
+                crop_top += move_step
+            else:
+                action = action_from_keypress(key)
+                match action:
+                    case KeyAction.ROTATE:
+                        bounds = rotate_bounds_clockwise(bounds, height)
+                        crop_left, crop_top, _, _ = rotate_bounds_clockwise(
+                            (crop_left, crop_top, crop_left + crop_size, crop_top + crop_size),
+                            height,
+                        )
+                        rotation = Rotation((rotation.value + 90) % 360)
+                        current_image = cv2.rotate(current_image, cv2.ROTATE_90_CLOCKWISE)
+                        break
+                    case KeyAction.PREVIOUS:
+                        return KeyAction.PREVIOUS
+                    case KeyAction.NEXT:
+                        return KeyAction.NEXT
+                    case KeyAction.CONFIRM:
+                        return CropSelection(crop_left, crop_top, rotation)
+                    case KeyAction.BACK:
+                        return KeyAction.BACK
+                    case KeyAction.RESET:
+                        crop_left = bounds[0] + (bounds[2] - bounds[0] - crop_size) // 2
+                        crop_top = bounds[1] + (bounds[3] - bounds[1] - crop_size) // 2
+                    case KeyAction.NONE:
+                        if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+                            raise SystemExit(0)
+            clamp()
 
 
 def interactive_crop_preview(image, window_name):
@@ -389,7 +600,10 @@ def interactive_crop_preview(image, window_name):
         action = action_from_keypress(cv2.waitKeyEx(20))
         if action in (KeyAction.CONFIRM, KeyAction.BACK, KeyAction.PREVIOUS, KeyAction.NEXT):
             return action
-        if action is KeyAction.NONE and cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+        if (
+            action is KeyAction.NONE
+            and cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1
+        ):
             raise SystemExit(0)
 
 
@@ -418,8 +632,13 @@ def main():
         output_dir = os.path.join(args.instance_data_dir, "preprocessed")
         image_files = sorted(
             f for f in os.listdir(args.instance_data_dir)
-            if f.lower().endswith(".jpg")
+            if os.path.splitext(f)[1].lower() in SUPPORTED_IMAGE_EXTENSIONS
         )
+        if not image_files:
+            raise ValueError(
+                f"No supported images found in {args.instance_data_dir!r}. "
+                f"Supported extensions: {', '.join(sorted(SUPPORTED_IMAGE_EXTENSIONS))}."
+            )
     elif args.instance_data is not None:
         output_dir = os.path.join(os.path.dirname(args.instance_data), "preprocessed")
         image_files = [args.instance_data]
