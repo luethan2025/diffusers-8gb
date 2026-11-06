@@ -44,6 +44,7 @@ LEFT_ARROW_KEYS = frozenset({81, 65361, 1113937, 2424832, 63234})
 UP_ARROW_KEYS = frozenset({82, 65362, 1113938, 2490368, 63232})
 RIGHT_ARROW_KEYS = frozenset({83, 65363, 1113939, 2555904, 63235})
 DOWN_ARROW_KEYS = frozenset({84, 65364, 1113940, 2621440, 63233})
+ARROW_KEYS = LEFT_ARROW_KEYS | UP_ARROW_KEYS | RIGHT_ARROW_KEYS | DOWN_ARROW_KEYS
 ROTATE_KEYS = frozenset({ord("r"), ord("R")})
 CONFIRM_KEYS = frozenset({ord("\r"), 10})
 RESET_KEYS = frozenset({ord("\x1b")})
@@ -621,7 +622,7 @@ def interactive_crop_position(
             )
             cv2.putText(
                 canvas,
-                "Arrows move crop | A/D previous/next",
+                "A/D previous/next image",
                 (field_x, canvas_height - 55),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.38,
@@ -641,41 +642,33 @@ def interactive_crop_position(
             )
             cv2.imshow(window_name, canvas)
             key = cv2.waitKeyEx(20)
-            move_step = max(1, int(round(10 / scale)))
-            if key in LEFT_ARROW_KEYS:
-                crop_left -= move_step
-            elif key in RIGHT_ARROW_KEYS:
-                crop_left += move_step
-            elif key in UP_ARROW_KEYS:
-                crop_top -= move_step
-            elif key in DOWN_ARROW_KEYS:
-                crop_top += move_step
-            else:
-                action = action_from_keypress(key)
-                match action:
-                    case KeyAction.ROTATE:
-                        bounds = rotate_bounds_clockwise(bounds, height)
-                        crop_left, crop_top, _, _ = rotate_bounds_clockwise(
-                            (crop_left, crop_top, crop_left + crop_size, crop_top + crop_size),
-                            height,
-                        )
-                        rotation = Rotation((rotation.value + 90) % 360)
-                        current_image = cv2.rotate(current_image, cv2.ROTATE_90_CLOCKWISE)
-                        break
-                    case KeyAction.PREVIOUS:
-                        return KeyAction.PREVIOUS
-                    case KeyAction.NEXT:
-                        return KeyAction.NEXT
-                    case KeyAction.CONFIRM:
-                        return CropSelection(crop_left, crop_top, rotation, bounds)
-                    case KeyAction.BACK:
-                        return KeyAction.BACK
-                    case KeyAction.RESET:
-                        crop_left = bounds[0] + (bounds[2] - bounds[0] - crop_size) // 2
-                        crop_top = bounds[1] + (bounds[3] - bounds[1] - crop_size) // 2
-                    case KeyAction.NONE:
-                        if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
-                            raise SystemExit(0)
+            if key in ARROW_KEYS:
+                continue
+            action = action_from_keypress(key)
+            match action:
+                case KeyAction.ROTATE:
+                    bounds = rotate_bounds_clockwise(bounds, height)
+                    crop_left, crop_top, _, _ = rotate_bounds_clockwise(
+                        (crop_left, crop_top, crop_left + crop_size, crop_top + crop_size),
+                        height,
+                    )
+                    rotation = Rotation((rotation.value + 90) % 360)
+                    current_image = cv2.rotate(current_image, cv2.ROTATE_90_CLOCKWISE)
+                    break
+                case KeyAction.PREVIOUS:
+                    return KeyAction.PREVIOUS
+                case KeyAction.NEXT:
+                    return KeyAction.NEXT
+                case KeyAction.CONFIRM:
+                    return CropSelection(crop_left, crop_top, rotation, bounds)
+                case KeyAction.BACK:
+                    return KeyAction.BACK
+                case KeyAction.RESET:
+                    crop_left = bounds[0] + (bounds[2] - bounds[0] - crop_size) // 2
+                    crop_top = bounds[1] + (bounds[3] - bounds[1] - crop_size) // 2
+                case KeyAction.NONE:
+                    if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+                        raise SystemExit(0)
             clamp()
 
 
@@ -778,6 +771,8 @@ def interactive_crop_preview(image_cv, selection, output_resolution, window_name
         cv2.imshow(window_name, canvas)
 
         key = cv2.waitKeyEx(20)
+        if key in ARROW_KEYS:
+            continue
         action = action_from_keypress(key)
         if action is KeyAction.CONFIRM:
             return selection
@@ -792,10 +787,6 @@ def interactive_crop_preview(image_cv, selection, output_resolution, window_name
 def action_from_keypress(key):
     if key in ROTATE_KEYS:
         return KeyAction.ROTATE
-    if key in LEFT_ARROW_KEYS:
-        return KeyAction.PREVIOUS
-    if key in RIGHT_ARROW_KEYS:
-        return KeyAction.NEXT
     if key in PREVIOUS_KEYS:
         return KeyAction.PREVIOUS
     if key in NEXT_KEYS:
