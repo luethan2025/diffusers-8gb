@@ -345,29 +345,30 @@ def interactive_precrop(image_cv, window_name, initial_bounds=None):
                 (90, 90, 90),
                 -1,
             )
+            button_text = "Make Square"
+            button_font_scale = 0.48
+            button_text_size, _ = cv2.getTextSize(
+                button_text,
+                cv2.FONT_HERSHEY_SIMPLEX,
+                button_font_scale,
+                1,
+            )
             cv2.putText(
                 canvas,
-                "Make square (height = width)",
-                (field_x + 8, square_button_y + 27),
+                button_text,
+                (
+                    field_x + (field_width - button_text_size[0]) // 2,
+                    square_button_y + (field_height + button_text_size[1]) // 2,
+                ),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.48,
+                button_font_scale,
                 (255, 255, 255),
                 1,
                 cv2.LINE_AA,
             )
             cv2.putText(
                 canvas,
-                "Arrows move | A/D previous/next",
-                (field_x, canvas.shape[0] - 48),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.38,
-                (220, 220, 220),
-                1,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                canvas,
-                "1/2 - Trim image",
+                "Use A/D to navigate between images",
                 (field_x, canvas.shape[0] - 22),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.43,
@@ -541,7 +542,7 @@ def interactive_crop_position(
             canvas[:, panel_x:] = (38, 38, 38)
             cv2.putText(
                 canvas,
-                "Crop box dimensions (pixels)",
+                "Dimensions",
                 (field_x, 48),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.53,
@@ -589,30 +590,10 @@ def interactive_crop_position(
                 )
             cv2.putText(
                 canvas,
-                "Fixed in stage 2",
-                (field_x, 230),
+                "Use arrows to move selection",
+                (field_x, canvas_height - 22),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.43,
-                (130, 130, 130),
-                1,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                canvas,
-                "Arrows move crop | A/D previous/next",
-                (field_x, canvas_height - 55),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.38,
-                (220, 220, 220),
-                1,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                canvas,
-                "ENTER preview | B back | R rotate | ESC reset",
-                (field_x, canvas_height - 27),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.31,
+                0.4,
                 (220, 220, 220),
                 1,
                 cv2.LINE_AA,
@@ -730,26 +711,6 @@ def interactive_crop_preview(image_cv, selection, output_resolution, window_name
             cv2.FONT_HERSHEY_SIMPLEX,
             0.42,
             (210, 210, 210),
-            1,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            canvas,
-            "ENTER save",
-            (panel_field_x, canvas_height - 55),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.39,
-            (255, 255, 255),
-            1,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            canvas,
-            "B back | A/D previous/next image",
-            (panel_field_x, canvas_height - 27),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.34,
-            (220, 220, 220),
             1,
             cv2.LINE_AA,
         )
