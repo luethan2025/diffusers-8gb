@@ -289,14 +289,6 @@ def interactive_precrop(image_cv, window_name, initial_bounds=None):
             left, top, right, bottom = [int(value * scale) for value in selection]
             frame[top:bottom, left:right] = display_base[top:bottom, left:right]
             cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 0), 2)
-            cv2.rectangle(frame, (left - 5, top - 5), (left + 5, top + 5), (0, 0, 0), -1)
-            cv2.rectangle(
-                frame,
-                (right - 5, bottom - 5),
-                (right + 5, bottom + 5),
-                (0, 0, 0),
-                -1,
-            )
             canvas = np.zeros((max(disp_h, 350), disp_w + panel_width, 3), dtype=np.uint8)
             canvas[:disp_h, :disp_w] = frame
             canvas[:, panel_x:] = (38, 38, 38)
@@ -541,24 +533,9 @@ def interactive_crop_position(
                 frame,
                 (display_left, display_top),
                 (display_left + disp_crop_size, display_top + disp_crop_size),
-                (255, 255, 255),
-                6,
-            )
-            cv2.rectangle(
-                frame,
-                (display_left, display_top),
-                (display_left + disp_crop_size, display_top + disp_crop_size),
                 (0, 0, 0),
                 2,
             )
-            for handle_x, handle_y in (
-                (display_left, display_top),
-                (display_left + disp_crop_size, display_top),
-                (display_left, display_top + disp_crop_size),
-                (display_left + disp_crop_size, display_top + disp_crop_size),
-            ):
-                cv2.circle(frame, (handle_x, handle_y), 7, (255, 255, 255), -1)
-                cv2.circle(frame, (handle_x, handle_y), 4, (0, 0, 0), -1)
             canvas = np.zeros((canvas_height, disp_w + panel_width, 3), dtype=np.uint8)
             canvas[:disp_h, :disp_w] = frame
             canvas[:, panel_x:] = (38, 38, 38)
@@ -622,7 +599,7 @@ def interactive_crop_position(
             )
             cv2.putText(
                 canvas,
-                "A/D previous/next image",
+                "Arrows move crop | A/D previous/next",
                 (field_x, canvas_height - 55),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.38,
@@ -642,33 +619,41 @@ def interactive_crop_position(
             )
             cv2.imshow(window_name, canvas)
             key = cv2.waitKeyEx(20)
-            if key in ARROW_KEYS:
-                continue
-            action = action_from_keypress(key)
-            match action:
-                case KeyAction.ROTATE:
-                    bounds = rotate_bounds_clockwise(bounds, height)
-                    crop_left, crop_top, _, _ = rotate_bounds_clockwise(
-                        (crop_left, crop_top, crop_left + crop_size, crop_top + crop_size),
-                        height,
-                    )
-                    rotation = Rotation((rotation.value + 90) % 360)
-                    current_image = cv2.rotate(current_image, cv2.ROTATE_90_CLOCKWISE)
-                    break
-                case KeyAction.PREVIOUS:
-                    return KeyAction.PREVIOUS
-                case KeyAction.NEXT:
-                    return KeyAction.NEXT
-                case KeyAction.CONFIRM:
-                    return CropSelection(crop_left, crop_top, rotation, bounds)
-                case KeyAction.BACK:
-                    return KeyAction.BACK
-                case KeyAction.RESET:
-                    crop_left = bounds[0] + (bounds[2] - bounds[0] - crop_size) // 2
-                    crop_top = bounds[1] + (bounds[3] - bounds[1] - crop_size) // 2
-                case KeyAction.NONE:
-                    if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
-                        raise SystemExit(0)
+            move_step = max(1, int(round(10 / scale)))
+            if key in LEFT_ARROW_KEYS:
+                crop_left -= move_step
+            elif key in RIGHT_ARROW_KEYS:
+                crop_left += move_step
+            elif key in UP_ARROW_KEYS:
+                crop_top -= move_step
+            elif key in DOWN_ARROW_KEYS:
+                crop_top += move_step
+            else:
+                action = action_from_keypress(key)
+                match action:
+                    case KeyAction.ROTATE:
+                        bounds = rotate_bounds_clockwise(bounds, height)
+                        crop_left, crop_top, _, _ = rotate_bounds_clockwise(
+                            (crop_left, crop_top, crop_left + crop_size, crop_top + crop_size),
+                            height,
+                        )
+                        rotation = Rotation((rotation.value + 90) % 360)
+                        current_image = cv2.rotate(current_image, cv2.ROTATE_90_CLOCKWISE)
+                        break
+                    case KeyAction.PREVIOUS:
+                        return KeyAction.PREVIOUS
+                    case KeyAction.NEXT:
+                        return KeyAction.NEXT
+                    case KeyAction.CONFIRM:
+                        return CropSelection(crop_left, crop_top, rotation, bounds)
+                    case KeyAction.BACK:
+                        return KeyAction.BACK
+                    case KeyAction.RESET:
+                        crop_left = bounds[0] + (bounds[2] - bounds[0] - crop_size) // 2
+                        crop_top = bounds[1] + (bounds[3] - bounds[1] - crop_size) // 2
+                    case KeyAction.NONE:
+                        if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+                            raise SystemExit(0)
             clamp()
 
 
