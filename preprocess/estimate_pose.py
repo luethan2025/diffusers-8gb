@@ -54,14 +54,17 @@ def main():
     args = parse_args()
 
     if args.instance_data_dir is not None:
-        output_dir = os.path.join(args.instance_data_dir, args.output_dir)
+        image_dir = args.instance_data_dir
+        output_dir = os.path.join(image_dir, args.output_dir)
         image_files = sorted(
-            f for f in os.listdir(args.instance_data_dir)
-            if os.path.splitext(f)[1].lower() in SUPPORTED_IMAGE_EXTENSIONS
+            filename
+            for filename in os.listdir(image_dir)
+            if os.path.isfile(os.path.join(image_dir, filename))
+            and os.path.splitext(filename)[1].lower() in SUPPORTED_IMAGE_EXTENSIONS
         )
         if not image_files:
             raise ValueError(
-                f"No supported images found in {args.instance_data_dir!r}. "
+                f"No supported images found in {image_dir!r}. "
                 f"Supported extensions: {', '.join(sorted(SUPPORTED_IMAGE_EXTENSIONS))}."
             )
     elif args.instance_data is not None:
@@ -81,11 +84,10 @@ def main():
         raise ValueError(f"Unsupported pose estimator: {args.estimator}")
 
     for image_file in image_files:
-        image_path = (
-            image_file
-            if args.instance_data is not None
-            else os.path.join(image_dir, image_file)
-        )
+        if args.instance_data_dir is not None:
+            image_path = os.path.join(args.instance_data_dir, image_file)
+        else:
+            image_path = args.instance_data
         with Image.open(image_path) as input_image:
             skeleton = dwpose(
                 input_image.convert("RGB"),
