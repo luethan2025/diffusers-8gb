@@ -7,3 +7,6 @@
 [submodule "inference/synthetic_data/InstantID"]
 	path = inference/identity_preservation/InstantID
 	url = https://github.com/luethan2025/InstantID.git
+[submodule "inference/pose_estimation/controlnet_aux"]
+	path = inference/pose_estimation/controlnet_aux
+	url = https://github.com/luethan2025/controlnet_aux
