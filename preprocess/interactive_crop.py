@@ -70,6 +70,12 @@ def parse_args(input_args=None):
         help="Training data file.",
     )
     parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="output",
+        help="The output directory where cropped images will be written to.",
+    )
+    parser.add_argument(
         "--resolution",
         type=int,
         default=768,
@@ -752,7 +758,7 @@ def main():
     args = parse_args()
 
     if args.instance_data_dir is not None:
-        output_dir = os.path.join(args.instance_data_dir, "preprocessed")
+        output_dir = os.path.join(args.instance_data_dir, args.output_dir)
         image_files = sorted(
             f for f in os.listdir(args.instance_data_dir)
             if os.path.splitext(f)[1].lower() in SUPPORTED_IMAGE_EXTENSIONS
@@ -763,7 +769,7 @@ def main():
                 f"Supported extensions: {', '.join(sorted(SUPPORTED_IMAGE_EXTENSIONS))}."
             )
     elif args.instance_data is not None:
-        output_dir = os.path.join(os.path.dirname(args.instance_data), "preprocessed")
+        output_dir = os.path.join(os.path.dirname(args.instance_data), args.output_dir)
         image_files = [args.instance_data]
     else:
         raise ValueError("Either --instance_data_dir or --instance_data must be provided.")
