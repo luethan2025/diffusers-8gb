@@ -54,17 +54,14 @@ def main():
     args = parse_args()
 
     if args.instance_data_dir is not None:
-        image_dir = args.instance_data_dir
+        output_dir = os.path.join(args.instance_data_dir, args.output_dir)
         image_files = sorted(
-            filename
-            for filename in os.listdir(image_dir)
-            if os.path.isfile(os.path.join(image_dir, filename))
-            and os.path.splitext(filename)[1].lower() in SUPPORTED_IMAGE_EXTENSIONS
+            f for f in os.listdir(args.instance_data_dir)
+            if os.path.splitext(f)[1].lower() in SUPPORTED_IMAGE_EXTENSIONS
         )
-        output_dir = os.path.join(image_dir, args.output_dir)
         if not image_files:
             raise ValueError(
-                f"No supported images found in {image_dir!r}. "
+                f"No supported images found in {args.instance_data_dir!r}. "
                 f"Supported extensions: {', '.join(sorted(SUPPORTED_IMAGE_EXTENSIONS))}."
             )
     elif args.instance_data is not None:
