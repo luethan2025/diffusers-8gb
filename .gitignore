@@ -9,6 +9,7 @@ __pycache__/
 *.safetensors
 *.bin
 *.pkl
+checkpoints/
 scripts/*
 !scripts/dreambooth/
 scripts/dreambooth/*
