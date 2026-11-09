@@ -2,7 +2,6 @@ import argparse
 import os
 
 import torch
-from easy_dwpose import DWposeDetector
 from PIL import Image
 
 
@@ -11,6 +10,13 @@ SUPPORTED_IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png"})
 
 def parse_args(input_args=None):
     parser = argparse.ArgumentParser(description="Estimate image poses.")
+    parser.add_argument(
+        "--estimator",
+        type=str,
+        choices=["dwpose"],
+        default="dwpose",
+        help="Pose estimator to use.",
+    )
     parser.add_argument(
         "--instance_data_dir",
         type=str,
@@ -70,7 +76,12 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    dwpose = DWposeDetector(device=device)
+    if args.estimator == "dwpose":
+        from easy_dwpose import DWposeDetector
+
+        dwpose = DWposeDetector(device=device)
+    else:
+        raise ValueError(f"Unsupported pose estimator: {args.estimator}")
 
     for image_file in image_files:
         image_path = (
