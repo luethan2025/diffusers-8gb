@@ -49,7 +49,7 @@ ROTATE_KEYS = frozenset({ord("r"), ord("R")})
 CONFIRM_KEYS = frozenset({ord("\r"), 10})
 RESET_KEYS = frozenset({ord("\x1b")})
 SKIP_KEYS = frozenset({ord("s"), ord("S")})
-BACK_KEYS = frozenset({ord("b"), ord("B")})
+BACK_KEYS = frozenset({ord("b"), ord("B"), ord("z"), ord("Z")})
 PREVIOUS_KEYS = frozenset({ord("a"), ord("A")})
 NEXT_KEYS = frozenset({ord("d"), ord("D")})
 SUPPORTED_IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png"})
@@ -597,7 +597,17 @@ def interactive_crop_position(
             cv2.putText(
                 canvas,
                 "Use arrows to move selection",
-                (field_x, canvas_height - 22),
+                (field_x, canvas_height - 42),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.4,
+                (220, 220, 220),
+                1,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                canvas,
+                "Z: back to crop box",
+                (field_x, canvas_height - 18),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.4,
                 (220, 220, 220),
@@ -714,6 +724,16 @@ def interactive_crop_preview(image_cv, selection, output_resolution, window_name
             canvas,
             f"Saved output: {output_resolution} x {output_resolution}",
             (panel_field_x, 390),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (210, 210, 210),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            canvas,
+            "Enter: save | Z: adjust crop",
+            (panel_field_x, 425),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.42,
             (210, 210, 210),
