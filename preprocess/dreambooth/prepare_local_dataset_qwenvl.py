@@ -3,7 +3,6 @@ import csv
 import os
 
 import torch
-from PIL import Image
 from tqdm.auto import tqdm
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
