@@ -24,6 +24,8 @@ accelerate launch examples/dreambooth/train_dreambooth_lora_sdxl.py \
   --optimizer="adamW" \
   --learning_rate=1e-4 \
   --rank=32 \
+  --lora_alpha=16 \
+  --lora_layers="to_k,to_q,to_v,to_out.0" \
   --checkpointing_steps=100 \
   --report_to="tensorboard" \
   --lr_scheduler="constant" \

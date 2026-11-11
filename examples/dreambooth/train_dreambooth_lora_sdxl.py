@@ -738,6 +738,21 @@ def parse_args(input_args=None):
         default=4,
         help=("The dimension of the LoRA update matrices."),
     )
+    parser.add_argument(
+        "--lora_alpha",
+        type=int,
+        default=4,
+        help="LoRA alpha to be used for additional scaling.",
+    )
+    parser.add_argument(
+        "--lora_layers",
+        type=str,
+        default=None,
+        help=(
+            'The transformer modules to apply LoRA training on. Please specify the layers in a comma separated string. '
+            'E.g. "to_k,to_q,to_v,to_out.0" will result in LoRA training of attention layers only.'
+        ),
+    )
 
     parser.add_argument("--lora_dropout", type=float, default=0.0, help="Dropout probability for LoRA layers")
 
@@ -1398,10 +1413,10 @@ def main(args):
             text_encoder_one.gradient_checkpointing_enable()
             text_encoder_two.gradient_checkpointing_enable()
 
-    def get_lora_config(rank, dropout, use_dora, target_modules):
+    def get_lora_config(rank, alpha, dropout, use_dora, target_modules):
         base_config = {
             "r": rank,
-            "lora_alpha": rank,
+            "lora_alpha": alpha,
             "lora_dropout": dropout,
             "init_lora_weights": "gaussian",
             "target_modules": target_modules,
@@ -1417,9 +1432,13 @@ def main(args):
         return LoraConfig(**base_config)
 
     # now we will add new LoRA weights to the attention layers
-    unet_target_modules = ["to_k", "to_q", "to_v", "to_out.0"]
+    if args.lora_layers is not None:
+        unet_target_modules = [layer.strip() for layer in args.lora_layers.split(",")]
+    else:
+        unet_target_modules = ["to_k", "to_q", "to_v", "to_out.0"]
     unet_lora_config = get_lora_config(
         rank=args.rank,
+        alpha=args.lora_alpha,
         dropout=args.lora_dropout,
         use_dora=args.use_dora,
         target_modules=unet_target_modules,
@@ -1432,6 +1451,7 @@ def main(args):
         text_target_modules = ["q_proj", "k_proj", "v_proj", "out_proj"]
         text_lora_config = get_lora_config(
             rank=args.rank,
+            alpha=args.lora_alpha,
             dropout=args.lora_dropout,
             use_dora=args.use_dora,
             target_modules=text_target_modules,
