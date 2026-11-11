@@ -369,8 +369,8 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--num_samples",
         type=int,
-        default=20,
-        help="Number of training images to use.",
+        default=None,
+        help="Optional maximum number of training images to randomly select before applying --repeats.",
     )
     parser.add_argument(
         "--class_prompt",
@@ -773,7 +773,7 @@ def parse_args(input_args=None):
         raise ValueError("Specify only one of `--dataset_name` or `--instance_data_dir`")
     if args.aspect_ratio_buckets is not None and not args.use_aspect_ratio_buckets:
         raise ValueError("--aspect_ratio_buckets requires --use_aspect_ratio_buckets to be set.")
-    if args.num_samples <= 0:
+    if args.num_samples is not None and args.num_samples <= 0:
         raise ValueError("--num_samples must be greater than zero.")
     if args.do_fp8_training and args.bnb_quantization_config_path is not None:
         raise ValueError("Both `--do_fp8_training` and `--bnb_quantization_config_path` cannot be passed.")
@@ -891,11 +891,12 @@ class DreamBoothDataset(Dataset):
             instance_images = [Image.open(path) for path in list(Path(instance_data_root).iterdir())]
             custom_instance_prompts = None
 
-        num_samples = min(args.num_samples, len(instance_images))
-        sample_indices = random.sample(range(len(instance_images)), num_samples)
-        instance_images = [instance_images[index] for index in sample_indices]
-        if custom_instance_prompts is not None:
-            custom_instance_prompts = [custom_instance_prompts[index] for index in sample_indices]
+        if args.num_samples is not None:
+            num_samples = min(args.num_samples, len(instance_images))
+            sample_indices = random.sample(range(len(instance_images)), num_samples)
+            instance_images = [instance_images[index] for index in sample_indices]
+            if custom_instance_prompts is not None:
+                custom_instance_prompts = [custom_instance_prompts[index] for index in sample_indices]
 
         if args.instance_prompt is None and custom_instance_prompts is None:
             raise ValueError("Specify `--instance_prompt` or provide a dataset `--caption_column`.")
