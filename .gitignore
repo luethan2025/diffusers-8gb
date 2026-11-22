@@ -2,6 +2,7 @@
 __pycache__/
 *.png
 *.jpg
+!datasets/**/dog/*.jpg
 *.jpeg
 *.mp4
 *.mp3

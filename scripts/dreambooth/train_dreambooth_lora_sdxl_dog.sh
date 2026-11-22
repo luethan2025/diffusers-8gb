@@ -1,7 +1,7 @@
 #!/bin/sh
 
 export MODEL_NAME="stabilityai/stable-diffusion-xl-base-1.0"
-export INSTANCE_DIR="dog"
+export INSTANCE_DIR="datasets/dreambooth/dog"
 export OUTPUT_DIR="trained-sdxl-lora"
 export BNB_QUANTIZATION_CONFIG_PATH="configs/bnb/train_dreambooth_lora_sdxl.json"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -17,7 +17,7 @@ accelerate launch examples/dreambooth/train_dreambooth_lora_sdxl.py \
   --cache_latents \
   --offload \
   --instance_prompt="a photo of sks dog" \
-  --resolution=1024 \
+  --resolution=768 \
   --train_batch_size=1 \
   --use_8bit_adam \
   --gradient_accumulation_steps=4 \
@@ -26,7 +26,7 @@ accelerate launch examples/dreambooth/train_dreambooth_lora_sdxl.py \
   --rank=32 \
   --lora_alpha=16 \
   --lora_layers="to_k,to_q,to_v,to_out.0" \
-  --checkpointing_steps=100 \
+  --checkpointing_steps=1000 \
   --report_to="tensorboard" \
   --lr_scheduler="constant" \
   --lr_warmup_steps=100 \
